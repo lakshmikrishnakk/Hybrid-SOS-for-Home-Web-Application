@@ -52,8 +52,8 @@ export function CustomTabList(props: TabListProps) {
   const colors = Colors[scheme === 'unspecified' ? 'light' : scheme];
 
   return (
-    <View {...props} style={styles.tabListContainer}>
-      <ThemedView type="backgroundElement" style={styles.innerContainer}>
+    <View {...props} pointerEvents="box-none" style={styles.tabListContainer}>
+      <ThemedView type="backgroundElement" pointerEvents="auto" style={styles.innerContainer}>
         <ThemedText type="smallBold" style={styles.brandText}>
           Expo Starter
         </ThemedText>
@@ -78,11 +78,13 @@ export function CustomTabList(props: TabListProps) {
 const styles = StyleSheet.create({
   tabListContainer: {
     position: 'absolute',
+    bottom: Spacing.three,
     width: '100%',
     padding: Spacing.three,
     justifyContent: 'center',
     alignItems: 'center',
     flexDirection: 'row',
+    zIndex: 100,
   },
   innerContainer: {
     paddingVertical: Spacing.two,

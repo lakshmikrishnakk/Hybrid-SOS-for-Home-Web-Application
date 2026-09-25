@@ -244,8 +244,8 @@ export default function HomeScreen() {
         contentContainerStyle={[
           styles.content,
           {
-            paddingTop: Math.max(insets.top + 10, 24),
-            paddingBottom: Math.max(insets.bottom + 30, 40),
+            paddingTop: Math.max(insets.top + 14, 28),
+            paddingBottom: Math.max(insets.bottom + 80, 90),
           },
         ]}
         showsVerticalScrollIndicator={false}
@@ -272,6 +272,7 @@ export default function HomeScreen() {
             </Text>
           </View>
 
+          {/* Profile Button in Top-Right Corner */}
           <TouchableOpacity
             style={[
               styles.profileCircle,
@@ -279,9 +280,11 @@ export default function HomeScreen() {
             ]}
             activeOpacity={0.7}
             onPress={() => setModalType("PROFILE")}
+            accessibilityLabel="Citizen profile and account settings"
           >
-            <Text style={styles.profileText}>👤</Text>
+            <Text style={styles.profileText} pointerEvents="none">👤</Text>
             <View
+              pointerEvents="none"
               style={[
                 styles.profileStatusDot,
                 isSosActive ? { backgroundColor: "#E53935" } : null,
@@ -899,7 +902,7 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* 7. PROFILE & LOGOUT MODAL */}
+            {/* 7. CITIZEN PROFILE & LOGOUT MODAL */}
             {modalType === "PROFILE" && (
               <View>
                 <View style={styles.dialogHeader}>
@@ -912,7 +915,7 @@ export default function HomeScreen() {
 
                 <View style={styles.dispatchDetailsCard}>
                   <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Full Name:</Text>
+                    <Text style={styles.dispatchLabel}>User Name:</Text>
                     <Text style={styles.dispatchValue}>{user?.fullName || "Active Citizen"}</Text>
                   </View>
                   <View style={styles.dispatchRow}>
@@ -920,11 +923,11 @@ export default function HomeScreen() {
                     <Text style={styles.dispatchValue}>{user?.email || "N/A"}</Text>
                   </View>
                   <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Phone:</Text>
-                    <Text style={styles.dispatchValue}>{user?.phoneNumber || "N/A"}</Text>
+                    <Text style={styles.dispatchLabel}>Phone Number:</Text>
+                    <Text style={styles.dispatchValue}>{user?.phoneNumber || "Not provided"}</Text>
                   </View>
                   <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Protection:</Text>
+                    <Text style={styles.dispatchLabel}>Protection Status:</Text>
                     <Text style={[styles.dispatchValue, { color: isSosActive ? "#FF5252" : "#00E676" }]}>
                       {isSosActive ? "🚨 SOS Broadcast Active" : "Active & Protected"}
                     </Text>
@@ -933,14 +936,20 @@ export default function HomeScreen() {
 
                 <View style={styles.dialogButtonsContainer}>
                   <TouchableOpacity
-                    style={[styles.dialogCancelButton, { borderColor: "#E53935", backgroundColor: "rgba(229, 57, 53, 0.15)" }]}
+                    style={[
+                      styles.dialogCancelButton,
+                      {
+                        borderColor: "#E53935",
+                        backgroundColor: "rgba(229, 57, 53, 0.15)",
+                      },
+                    ]}
                     activeOpacity={0.8}
                     onPress={() => {
                       setModalType("NONE");
                       logout();
                     }}
                   >
-                    <Text style={[styles.dialogCancelButtonText, { color: "#FF5252" }]}>
+                    <Text style={[styles.dialogCancelButtonText, { color: "#FF5252", fontWeight: "700" }]}>
                       Log Out of Account
                     </Text>
                   </TouchableOpacity>
@@ -977,6 +986,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: 20,
+    zIndex: 10,
   },
 
   headerTitleContainer: {
@@ -1045,28 +1055,34 @@ const styles = StyleSheet.create({
   },
 
   profileCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "#102A48",
     borderWidth: 1.5,
     borderColor: "#1E4775",
     justifyContent: "center",
     alignItems: "center",
     position: "relative",
+    zIndex: 20,
+    ...Platform.select({
+      web: {
+        cursor: "pointer",
+      },
+    }),
   },
 
   profileText: {
-    fontSize: 20,
+    fontSize: 22,
   },
 
   profileStatusDot: {
     position: "absolute",
     bottom: 2,
     right: 2,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 11,
+    height: 11,
+    borderRadius: 6,
     backgroundColor: "#00E676",
     borderWidth: 2,
     borderColor: "#081B33",
@@ -1645,7 +1661,7 @@ const styles = StyleSheet.create({
     color: "#8EB8E6",
     fontSize: 12,
     fontWeight: "600",
-    width: 120,
+    width: 130,
   },
 
   dispatchValue: {
