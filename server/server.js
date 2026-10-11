@@ -1,8 +1,12 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 const express = require("express");
 const cors = require("cors");
 const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
+const contactRoutes = require("./routes/contactRoutes");
+const workerRoutes = require("./routes/workerRoutes");
+const alertRoutes = require("./routes/alertRoutes");
 
 // Initialize Express
 const app = express();
@@ -26,6 +30,9 @@ app.get("/", (req, res) => {
 
 // API Routes
 app.use("/api/auth", authRoutes);
+app.use("/api/contacts", contactRoutes);
+app.use("/api/workers", workerRoutes);
+app.use("/api/alerts", alertRoutes);
 
 // Port & Server Startup
 const PORT = process.env.PORT || 5000;
