@@ -1,9 +1,19 @@
+export type LocationSource = "REAL_GPS" | "WEB_GEOLOCATION" | "DEMO_FALLBACK";
+
 export interface LocationCoords {
   latitude: number;
   longitude: number;
   accuracy?: number;
+  altitude?: number | null;
+  heading?: number | null;
+  speed?: number | null;
   address?: string;
-  isSimulated?: boolean;
+  isSimulated: boolean;
+  source: LocationSource;
+  googleMapsUrl?: string;
+  timestamp?: number;
+  error?: string | null;
+  permissionStatus?: "granted" | "denied" | "undetermined";
 }
 
 export interface EmergencyContact {
@@ -41,4 +51,6 @@ export interface EmergencyEvent {
   notifiedContacts: string[];
   assignedWorker: string;
   notes?: string;
+  isSimulatedLocation?: boolean;
+  googleMapsUrl?: string;
 }

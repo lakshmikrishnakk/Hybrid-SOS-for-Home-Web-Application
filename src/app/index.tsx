@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Platform,
   ScrollView,
@@ -23,6 +24,7 @@ import {
   apiRegisterWorker,
   apiDeleteWorker,
 } from "@/services/api";
+import { fetchDeviceLocation, formatCoordinates } from "@/services/location";
 
 type ModalType =
   | "NONE"
@@ -53,6 +55,7 @@ export default function HomeScreen() {
   const [isSosActive, setIsSosActive] = useState<boolean>(false);
   const [isLocating, setIsLocating] = useState<boolean>(false);
   const [currentLocation, setCurrentLocation] = useState<LocationCoords | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const [activeEvent, setActiveEvent] = useState<EmergencyEvent | null>(null);
 
   const [contacts, setContacts] = useState<EmergencyContact[]>(INITIAL_CONTACTS);
@@ -415,48 +418,35 @@ export default function HomeScreen() {
     },
   ]);
 
-  // Attempt to detect location
+  // Attempt to detect genuine device GPS location
   const fetchLocation = async (): Promise<LocationCoords> => {
     setIsLocating(true);
+    setLocationError(null);
 
-    if (typeof navigator !== "undefined" && navigator.geolocation) {
-      try {
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 6000,
-            maximumAge: 10000,
-          });
-        });
-
-        const coords: LocationCoords = {
-          latitude: Number(position.coords.latitude.toFixed(5)),
-          longitude: Number(position.coords.longitude.toFixed(5)),
-          accuracy: Math.round(position.coords.accuracy || 12),
-          address: `${position.coords.latitude.toFixed(4)}° N, ${position.coords.longitude.toFixed(4)}° E`,
-          isSimulated: false,
-        };
-
-        setCurrentLocation(coords);
-        setIsLocating(false);
-        return coords;
-      } catch (err) {
-        // Fall through to fallback
+    try {
+      const result = await fetchDeviceLocation(9000);
+      setCurrentLocation(result.coords);
+      if (result.error) {
+        setLocationError(result.error);
       }
+      setIsLocating(false);
+      return result.coords;
+    } catch (err: any) {
+      const fallbackCoords: LocationCoords = {
+        latitude: 12.9716,
+        longitude: 77.5946,
+        accuracy: 15,
+        address: "12.9716° N, 77.5946° E (Simulation Fallback - GPS Failed)",
+        isSimulated: true,
+        source: "DEMO_FALLBACK",
+        error: err?.message || "Location acquisition failed.",
+        permissionStatus: "denied",
+      };
+      setCurrentLocation(fallbackCoords);
+      setLocationError(err?.message || "GPS acquisition error.");
+      setIsLocating(false);
+      return fallbackCoords;
     }
-
-    // Default emergency fallback coordinates
-    const fallbackCoords: LocationCoords = {
-      latitude: 12.9716,
-      longitude: 77.5946,
-      accuracy: 15,
-      address: "12.9716° N, 77.5946° E (Estimated Device GPS)",
-      isSimulated: true,
-    };
-
-    setCurrentLocation(fallbackCoords);
-    setIsLocating(false);
-    return fallbackCoords;
   };
 
   useEffect(() => {
@@ -490,6 +480,10 @@ export default function HomeScreen() {
     });
 
     const eventId = `SOS-${Date.now().toString().slice(-6)}`;
+    const locationDisplay = loc.isSimulated
+      ? `${loc.address} [DEMO SIMULATION]`
+      : `${loc.address} (±${loc.accuracy}m)`;
+
     const newEvent: EmergencyEvent = {
       id: eventId,
       userName: user?.fullName || "Active Citizen",
@@ -498,16 +492,20 @@ export default function HomeScreen() {
       timestamp: `${timeFormatted}, ${dateFormatted}`,
       dateStr: "Active Now",
       status: "ACTIVE_DISPATCH",
-      location: loc.address || `${loc.latitude}° N, ${loc.longitude}° E`,
+      location: locationDisplay,
       latitude: loc.latitude,
       longitude: loc.longitude,
+      isSimulatedLocation: loc.isSimulated,
+      googleMapsUrl: !loc.isSimulated ? loc.googleMapsUrl : undefined,
       notifiedContacts: [
         "Priya Sharma (Mother) - SMS Sent",
         "Maya Sharma (Sister) - SMS Sent",
         "Central Dispatch EMS (911) - Alert Received",
       ],
       assignedWorker: "Sarah Jenkins, LCSW (Badge #SW-4821)",
-      notes: "Urgent beacon triggered by user. High-priority dispatch active.",
+      notes: loc.isSimulated
+        ? "Urgent beacon triggered by user. High-priority dispatch active (Simulation Coordinates)."
+        : "Urgent beacon triggered by user. Real device GPS coordinates transmitted.",
     };
 
     setActiveEvent(newEvent);
@@ -728,29 +726,49 @@ export default function HomeScreen() {
                 <View
                   style={[
                     styles.pillBadge,
-                    isSosActive ? styles.pillBadgeAlert : null,
+                    isSosActive
+                      ? styles.pillBadgeAlert
+                      : isLocating
+                      ? styles.pillBadgeLocating
+                      : currentLocation && !currentLocation.isSimulated
+                      ? styles.pillBadgeRealGps
+                      : styles.pillBadgeDemoLocation,
                   ]}
                 >
                   <Text
                     style={[
                       styles.pillBadgeText,
-                      isSosActive ? styles.pillBadgeTextAlert : null,
+                      isSosActive
+                        ? styles.pillBadgeTextAlert
+                        : isLocating
+                        ? styles.pillBadgeTextLocating
+                        : currentLocation && !currentLocation.isSimulated
+                        ? styles.pillBadgeTextRealGps
+                        : styles.pillBadgeTextDemoLocation,
                     ]}
                   >
                     {isSosActive
                       ? "Broadcasting"
-                      : currentLocation
-                      ? "GPS Ready"
-                      : "Locating..."}
+                      : isLocating
+                      ? "Locating..."
+                      : currentLocation && !currentLocation.isSimulated
+                      ? `🟢 Real GPS (±${currentLocation.accuracy}m)`
+                      : currentLocation?.permissionStatus === "denied"
+                      ? "❌ Permission Denied"
+                      : "⚠️ Demo Coordinates"}
                   </Text>
                 </View>
               </View>
               <Text style={styles.cardSubtitle}>
                 {isSosActive
                   ? `Transmitting: ${currentLocation?.address || "Live Coordinates"}`
-                  : currentLocation
+                  : isLocating
+                  ? "Acquiring real-time GPS fix from satellite/device..."
+                  : currentLocation && !currentLocation.isSimulated
                   ? `${currentLocation.address} (±${currentLocation.accuracy}m)`
-                  : "Tap to detect your current location"}
+                  : currentLocation?.permissionStatus === "denied"
+                  ? "Location permission denied. Tap to view details & retry."
+                  : `${currentLocation?.address || "Tap to detect your current location"}`}
               </Text>
             </View>
 
@@ -921,11 +939,34 @@ export default function HomeScreen() {
 
                 {/* Location Status Pill */}
                 <View style={styles.dialogPillBox}>
-                  <Text style={styles.dialogPillLabel}>LOCATION TO BROADCAST:</Text>
+                  <View style={styles.dialogPillHeaderRow}>
+                    <Text style={styles.dialogPillLabel}>LOCATION TO BROADCAST:</Text>
+                    {currentLocation && !isLocating && (
+                      <View
+                        style={[
+                          styles.gpsSourceTag,
+                          currentLocation.isSimulated
+                            ? styles.gpsSourceTagDemo
+                            : styles.gpsSourceTagReal,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.gpsSourceTagText,
+                            currentLocation.isSimulated
+                              ? styles.gpsSourceTagTextDemo
+                              : styles.gpsSourceTagTextReal,
+                          ]}
+                        >
+                          {currentLocation.isSimulated ? "⚠️ DEMO SIMULATION" : "🟢 REAL DEVICE GPS"}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
                   {isLocating ? (
                     <View style={styles.locatingRow}>
                       <ActivityIndicator size="small" color="#4CA2FF" />
-                      <Text style={styles.locatingText}>Acquiring GPS fix...</Text>
+                      <Text style={styles.locatingText}>Acquiring genuine GPS fix...</Text>
                     </View>
                   ) : (
                     <Text style={styles.dialogPillValue}>
@@ -986,9 +1027,16 @@ export default function HomeScreen() {
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>GPS Location:</Text>
-                    <Text style={styles.dispatchValue}>
-                      {currentLocation?.address || "Active Coordinates"}
-                    </Text>
+                    <View style={{ flex: 1, alignItems: "flex-end" }}>
+                      <Text style={styles.dispatchValue}>
+                        {currentLocation?.address || "Active Coordinates"}
+                      </Text>
+                      {currentLocation?.isSimulated ? (
+                        <Text style={styles.demoWarningSmall}>⚠️ Demo Simulation (Not Real GPS)</Text>
+                      ) : (
+                        <Text style={styles.realGpsSmall}>🟢 Real Hardware GPS Fix</Text>
+                      )}
+                    </View>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Social Worker:</Text>
@@ -1035,24 +1083,74 @@ export default function HomeScreen() {
                   </Text>
                 </View>
 
+                {/* Warning banner when in simulation fallback or permission denied */}
+                {currentLocation?.isSimulated && (
+                  <View style={styles.locationWarningBox}>
+                    <Text style={styles.locationWarningIcon}>⚠️</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.locationWarningTitle}>
+                        {currentLocation.permissionStatus === "denied"
+                          ? "LOCATION PERMISSION DENIED"
+                          : "DEMO SIMULATION COORDINATES"}
+                      </Text>
+                      <Text style={styles.locationWarningText}>
+                        {locationError ||
+                          (currentLocation.permissionStatus === "denied"
+                            ? "Permission was denied. Tap 'Refresh GPS Fix' to request access or enable in device settings."
+                            : "Real device GPS is unavailable. Displaying demo coordinates for simulation only.")}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
                 <View style={styles.dispatchDetailsCard}>
                   <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Status:</Text>
-                    <Text style={[styles.dispatchValue, { color: isSosActive ? "#FF5252" : "#00E676" }]}>
-                      {isSosActive ? "Broadcasting to EMS" : "GPS Locked & Ready"}
+                    <Text style={styles.dispatchLabel}>Fix Type:</Text>
+                    <Text
+                      style={[
+                        styles.dispatchValue,
+                        {
+                          color: isSosActive
+                            ? "#FF5252"
+                            : currentLocation && !currentLocation.isSimulated
+                            ? "#00E676"
+                            : "#FFB300",
+                          fontWeight: "700",
+                        },
+                      ]}
+                    >
+                      {isSosActive
+                        ? "Broadcasting to EMS"
+                        : isLocating
+                        ? "Acquiring GPS fix..."
+                        : currentLocation && !currentLocation.isSimulated
+                        ? "🟢 Genuine Device GPS"
+                        : "⚠️ Simulated Fallback"}
                     </Text>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Latitude:</Text>
-                    <Text style={styles.dispatchValue}>{currentLocation?.latitude ?? "Detecting..."}° N</Text>
+                    <Text style={styles.dispatchValue}>
+                      {currentLocation
+                        ? `${Math.abs(currentLocation.latitude).toFixed(5)}° ${currentLocation.latitude >= 0 ? "N" : "S"}`
+                        : "Detecting..."}
+                    </Text>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Longitude:</Text>
-                    <Text style={styles.dispatchValue}>{currentLocation?.longitude ?? "Detecting..."}° E</Text>
+                    <Text style={styles.dispatchValue}>
+                      {currentLocation
+                        ? `${Math.abs(currentLocation.longitude).toFixed(5)}° ${currentLocation.longitude >= 0 ? "E" : "W"}`
+                        : "Detecting..."}
+                    </Text>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Accuracy:</Text>
-                    <Text style={styles.dispatchValue}>±{currentLocation?.accuracy || 12} meters</Text>
+                    <Text style={styles.dispatchValue}>
+                      {currentLocation
+                        ? `±${currentLocation.accuracy || 12} meters ${currentLocation.isSimulated ? "(Simulated)" : "(Hardware)"}`
+                        : "Detecting..."}
+                    </Text>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Address / Tag:</Text>
@@ -1060,14 +1158,41 @@ export default function HomeScreen() {
                   </View>
                 </View>
 
+                {/* Google Maps link: only shown when REAL GPS coordinates are obtained */}
+                {currentLocation?.googleMapsUrl && !currentLocation.isSimulated && (
+                  <View style={styles.mapsLinkBox}>
+                    <View style={{ flex: 1, paddingRight: 8 }}>
+                      <Text style={styles.mapsLinkLabel}>GOOGLE MAPS EMERGENCY LINK:</Text>
+                      <Text style={styles.mapsLinkUrl} numberOfLines={1} ellipsizeMode="middle">
+                        {currentLocation.googleMapsUrl}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.mapsOpenButton}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        if (currentLocation?.googleMapsUrl) {
+                          Linking.openURL(currentLocation.googleMapsUrl);
+                        }
+                      }}
+                    >
+                      <Text style={styles.mapsOpenButtonText}>Open Map ↗</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
                 <View style={styles.dialogButtonsContainer}>
                   <TouchableOpacity
-                    style={styles.dialogActionButton}
+                    style={[styles.dialogActionButton, isLocating ? { opacity: 0.7 } : null]}
                     activeOpacity={0.8}
+                    disabled={isLocating}
                     onPress={fetchLocation}
                   >
                     {isLocating ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                        <Text style={styles.dialogActionButtonText}>Acquiring GPS...</Text>
+                      </View>
                     ) : (
                       <Text style={styles.dialogActionButtonText}>Refresh GPS Fix</Text>
                     )}
@@ -2883,5 +3008,137 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     marginTop: -8,
     marginBottom: 10,
+  },
+
+  pillBadgeRealGps: {
+    backgroundColor: "rgba(0, 230, 118, 0.15)",
+    borderColor: "rgba(0, 230, 118, 0.4)",
+  },
+  pillBadgeTextRealGps: {
+    color: "#00E676",
+  },
+  pillBadgeDemoLocation: {
+    backgroundColor: "rgba(255, 171, 0, 0.15)",
+    borderColor: "rgba(255, 171, 0, 0.4)",
+  },
+  pillBadgeTextDemoLocation: {
+    color: "#FFB300",
+  },
+  pillBadgeLocating: {
+    backgroundColor: "rgba(76, 162, 255, 0.15)",
+    borderColor: "rgba(76, 162, 255, 0.4)",
+  },
+  pillBadgeTextLocating: {
+    color: "#4CA2FF",
+  },
+
+  dialogPillHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  gpsSourceTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  gpsSourceTagReal: {
+    backgroundColor: "rgba(0, 230, 118, 0.15)",
+    borderColor: "rgba(0, 230, 118, 0.4)",
+  },
+  gpsSourceTagDemo: {
+    backgroundColor: "rgba(255, 171, 0, 0.15)",
+    borderColor: "rgba(255, 171, 0, 0.4)",
+  },
+  gpsSourceTagText: {
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  gpsSourceTagTextReal: {
+    color: "#00E676",
+  },
+  gpsSourceTagTextDemo: {
+    color: "#FFB300",
+  },
+
+  locationWarningBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "rgba(255, 171, 0, 0.12)",
+    borderColor: "rgba(255, 171, 0, 0.4)",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
+  },
+  locationWarningIcon: {
+    fontSize: 16,
+    marginTop: 1,
+  },
+  locationWarningTitle: {
+    color: "#FFB300",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  locationWarningText: {
+    color: "#DCE7F5",
+    fontSize: 11,
+    lineHeight: 15,
+  },
+
+  mapsLinkBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#0D223B",
+    borderColor: "rgba(76, 162, 255, 0.3)",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
+  },
+  mapsLinkLabel: {
+    color: "#5E7E9E",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  mapsLinkUrl: {
+    color: "#4CA2FF",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  mapsOpenButton: {
+    backgroundColor: "rgba(76, 162, 255, 0.2)",
+    borderColor: "#4CA2FF",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  mapsOpenButtonText: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  demoWarningSmall: {
+    color: "#FFB300",
+    fontSize: 10,
+    fontWeight: "700",
+    marginTop: 2,
+  },
+  realGpsSmall: {
+    color: "#00E676",
+    fontSize: 10,
+    fontWeight: "700",
+    marginTop: 2,
   },
 });

@@ -32,6 +32,12 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Hybrid SOS to access your location to dispatch emergency responders and notify trusted contacts during distress alerts."
+        }
       ]
     ],
     "experiments": {
