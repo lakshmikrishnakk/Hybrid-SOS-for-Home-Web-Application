@@ -5,107 +5,75 @@ import {
   RegisterFormData,
   UserProfile,
 } from "@/types/auth";
-
-interface StoredAccount extends UserProfile {
-  password: string;
-}
-
-// Pre-seeded demo account for rapid testing
-const INITIAL_DEMO_ACCOUNTS: StoredAccount[] = [
-  {
-    id: "demo-user-1",
-    fullName: "Officer Alex Taylor",
-    email: "demo@hybridsos.com",
-    phoneNumber: "+1 (555) 234-5678",
-    password: "Password123",
-    createdAt: new Date().toISOString(),
-  },
-];
+import { apiLogin, apiRegister } from "@/services/api";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [accounts, setAccounts] = useState<StoredAccount[]>(INITIAL_DEMO_ACCOUNTS);
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  const login = (credentials: LoginCredentials): { success: boolean; error?: string } => {
-    const trimmedEmail = credentials.email.trim().toLowerCase();
-    const trimmedPassword = credentials.password.trim();
+  const login = async (
+    credentials: LoginCredentials
+  ): Promise<{ success: boolean; error?: string }> => {
+    setIsLoading(true);
+    try {
+      const response = await apiLogin(credentials);
 
-    if (!trimmedEmail) {
-      return { success: false, error: "Email is required." };
-    }
+      if (response.success && response.token && response.user) {
+        setUser(response.user);
+        setToken(response.token);
+        setIsAuthenticated(true);
+        return { success: true };
+      }
 
-    if (!trimmedPassword) {
-      return { success: false, error: "Password is required." };
-    }
-
-    const matched = accounts.find(
-      (acc) => acc.email.toLowerCase() === trimmedEmail && acc.password === trimmedPassword
-    );
-
-    if (!matched) {
       return {
         success: false,
-        error: "Invalid email or password. Please check your credentials.",
+        error: response.error || "Login failed. Please check your credentials.",
       };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || "An unexpected error occurred during login.",
+      };
+    } finally {
+      setIsLoading(false);
     }
-
-    const userProfile: UserProfile = {
-      id: matched.id,
-      fullName: matched.fullName,
-      email: matched.email,
-      phoneNumber: matched.phoneNumber,
-      createdAt: matched.createdAt,
-    };
-
-    setUser(userProfile);
-    setIsAuthenticated(true);
-    return { success: true };
   };
 
-  const register = (data: RegisterFormData): { success: boolean; error?: string } => {
-    const trimmedEmail = data.email.trim().toLowerCase();
-    const trimmedFullName = data.fullName.trim();
-    const trimmedPhone = data.phoneNumber.trim();
-    const trimmedPassword = data.password.trim();
+  const register = async (
+    data: RegisterFormData
+  ): Promise<{ success: boolean; error?: string }> => {
+    setIsLoading(true);
+    try {
+      const response = await apiRegister(data);
 
-    const existing = accounts.find((acc) => acc.email.toLowerCase() === trimmedEmail);
-    if (existing) {
+      if (response.success && response.token && response.user) {
+        setUser(response.user);
+        setToken(response.token);
+        setIsAuthenticated(true);
+        return { success: true };
+      }
+
       return {
         success: false,
-        error: "An account with this email address already exists.",
+        error: response.error || "Registration failed. Please check your details.",
       };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || "An unexpected error occurred during registration.",
+      };
+    } finally {
+      setIsLoading(false);
     }
-
-    const newAccount: StoredAccount = {
-      id: `user-${Date.now()}`,
-      fullName: trimmedFullName,
-      email: trimmedEmail,
-      phoneNumber: trimmedPhone,
-      password: trimmedPassword,
-      createdAt: new Date().toISOString(),
-    };
-
-    setAccounts((prev) => [...prev, newAccount]);
-
-    const userProfile: UserProfile = {
-      id: newAccount.id,
-      fullName: newAccount.fullName,
-      email: newAccount.email,
-      phoneNumber: newAccount.phoneNumber,
-      createdAt: newAccount.createdAt,
-    };
-
-    setUser(userProfile);
-    setIsAuthenticated(true);
-    return { success: true };
   };
 
   const logout = () => {
     setUser(null);
+    setToken(null);
     setIsAuthenticated(false);
   };
 
@@ -113,6 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     <AuthContext.Provider
       value={{
         user,
+        token,
         isAuthenticated,
         isLoading,
         login,

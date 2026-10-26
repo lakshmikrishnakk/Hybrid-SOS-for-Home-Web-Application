@@ -53,18 +53,22 @@ export default function LoginScreen({ onNavigateToRegister }: LoginScreenProps) 
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     setErrors({});
     if (!validate()) {
       return;
     }
 
     setIsSubmitting(true);
-    const result = login({ email, password });
-    setIsSubmitting(false);
-
-    if (!result.success) {
-      setErrors({ general: result.error || "Login failed. Please check your credentials." });
+    try {
+      const result = await login({ email, password });
+      if (!result.success) {
+        setErrors({ general: result.error || "Login failed. Please check your credentials." });
+      }
+    } catch (err: any) {
+      setErrors({ general: err?.message || "An unexpected error occurred during login." });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

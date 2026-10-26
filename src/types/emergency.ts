@@ -20,8 +20,11 @@ export interface SocialWorker {
   badgeNumber: string;
   agency: string;
   phone: string;
-  status: "Assigned" | "En Route" | "On Standby";
+  status: "Assigned" | "En Route" | "On Standby" | "Available" | "Off Duty" | string;
   eta?: string;
+  currentEta?: string;
+  isDemo?: boolean;
+  isVerified?: boolean;
 }
 
 export interface EmergencyEvent {

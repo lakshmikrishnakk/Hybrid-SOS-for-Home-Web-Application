@@ -102,18 +102,22 @@ export default function RegisterScreen({ onNavigateToLogin }: RegisterScreenProp
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleRegister = () => {
+  const handleRegister = async () => {
     setErrors({});
     if (!validate()) {
       return;
     }
 
     setIsSubmitting(true);
-    const result = register(formData);
-    setIsSubmitting(false);
-
-    if (!result.success) {
-      setErrors({ general: result.error || "Registration failed. Please try again." });
+    try {
+      const result = await register(formData);
+      if (!result.success) {
+        setErrors({ general: result.error || "Registration failed. Please try again." });
+      }
+    } catch (err: any) {
+      setErrors({ general: err?.message || "An unexpected error occurred during registration." });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

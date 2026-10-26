@@ -32,6 +32,14 @@ const socialWorkerSchema = new mongoose.Schema(
       type: String,
       default: "7 mins",
     },
+    isDemo: {
+      type: Boolean,
+      default: true,
+    },
+    isVerified: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,

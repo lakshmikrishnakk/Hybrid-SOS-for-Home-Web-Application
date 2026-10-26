@@ -30,9 +30,10 @@ export interface ValidationErrors {
 
 export interface AuthContextType {
   user: UserProfile | null;
+  token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (credentials: LoginCredentials) => { success: boolean; error?: string };
-  register: (data: RegisterFormData) => { success: boolean; error?: string };
+  login: (credentials: LoginCredentials) => Promise<{ success: boolean; error?: string }>;
+  register: (data: RegisterFormData) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
 }

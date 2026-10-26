@@ -2,17 +2,27 @@ import React, { useState, useEffect } from "react";
 import { StatusBar } from "expo-status-bar";
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/context/auth-context";
 import { EmergencyContact, EmergencyEvent, LocationCoords, SocialWorker } from "@/types/emergency";
+import {
+  apiGetContacts,
+  apiAddContact,
+  apiDeleteContact,
+  apiGetWorkers,
+  apiRegisterWorker,
+  apiDeleteWorker,
+} from "@/services/api";
 
 type ModalType =
   | "NONE"
@@ -24,29 +34,7 @@ type ModalType =
   | "HISTORY"
   | "PROFILE";
 
-const INITIAL_CONTACTS: EmergencyContact[] = [
-  {
-    id: "c1",
-    name: "Priya Sharma",
-    relationship: "Mother",
-    phone: "+1 (555) 0192",
-    status: "Ready",
-  },
-  {
-    id: "c2",
-    name: "Maya Sharma",
-    relationship: "Sister",
-    phone: "+1 (555) 0183",
-    status: "Ready",
-  },
-  {
-    id: "c3",
-    name: "Emergency Services",
-    relationship: "National 911 / EMS",
-    phone: "911",
-    status: "Ready",
-  },
-];
+const INITIAL_CONTACTS: EmergencyContact[] = [];
 
 const INITIAL_WORKER: SocialWorker = {
   id: "sw-1",
@@ -59,7 +47,7 @@ const INITIAL_WORKER: SocialWorker = {
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const { user, logout } = useAuth();
+  const { user, logout, token } = useAuth();
 
   const [modalType, setModalType] = useState<ModalType>("NONE");
   const [isSosActive, setIsSosActive] = useState<boolean>(false);
@@ -69,6 +57,345 @@ export default function HomeScreen() {
 
   const [contacts, setContacts] = useState<EmergencyContact[]>(INITIAL_CONTACTS);
   const [socialWorker, setSocialWorker] = useState<SocialWorker>(INITIAL_WORKER);
+  const [workers, setWorkers] = useState<SocialWorker[]>([]);
+  const [isLoadingWorkers, setIsLoadingWorkers] = useState<boolean>(false);
+  const [isSavingWorker, setIsSavingWorker] = useState<boolean>(false);
+  const [workerSuccess, setWorkerSuccess] = useState<string | null>(null);
+  const [workerError, setWorkerError] = useState<string | null>(null);
+  const [deletingWorkerId, setDeletingWorkerId] = useState<string | null>(null);
+
+  // New demo social worker form fields
+  const [newWorkerName, setNewWorkerName] = useState<string>("");
+  const [newWorkerPhone, setNewWorkerPhone] = useState<string>("");
+  const [newWorkerBadge, setNewWorkerBadge] = useState<string>("");
+  const [newWorkerAgency, setNewWorkerAgency] = useState<string>("");
+
+  // Emergency contacts state & handlers
+  const [isLoadingContacts, setIsLoadingContacts] = useState<boolean>(false);
+  const [isSavingContact, setIsSavingContact] = useState<boolean>(false);
+  const [deletingContactId, setDeletingContactId] = useState<string | null>(null);
+  const [contactSuccess, setContactSuccess] = useState<string | null>(null);
+  const [contactError, setContactError] = useState<string | null>(null);
+
+  // New contact form fields
+  const [newName, setNewName] = useState<string>("");
+  const [newRelationship, setNewRelationship] = useState<string>("");
+  const [newPhone, setNewPhone] = useState<string>("");
+
+  const loadContacts = async () => {
+    if (!token) return;
+    setIsLoadingContacts(true);
+    try {
+      const res = await apiGetContacts(token);
+      if (res.success && res.contacts) {
+        setContacts(res.contacts);
+      } else if (res.error) {
+        setContactError(res.error);
+      }
+    } catch (err: any) {
+      setContactError(err?.message || "Failed to load emergency contacts.");
+    } finally {
+      setIsLoadingContacts(false);
+    }
+  };
+
+  const loadWorkers = async () => {
+    setIsLoadingWorkers(true);
+    try {
+      const res = await apiGetWorkers();
+      if (res.success && res.workers) {
+        setWorkers(res.workers);
+        if (res.workers.length > 0) {
+          // If the assigned worker is default or not found, update to first available worker
+          setSocialWorker((prev) => {
+            const found = res.workers!.find(
+              (w) => w.id === prev.id || w.badgeNumber === prev.badgeNumber
+            );
+            return found || res.workers![0];
+          });
+        }
+      } else if (res.error) {
+        setWorkerError(res.error);
+      }
+    } catch (err: any) {
+      setWorkerError(err?.message || "Failed to load social workers.");
+    } finally {
+      setIsLoadingWorkers(false);
+    }
+  };
+
+  useEffect(() => {
+    loadWorkers();
+  }, []);
+
+  useEffect(() => {
+    if (token) {
+      loadContacts();
+      loadWorkers();
+    }
+  }, [token]);
+
+  const validateNewContact = (): string | null => {
+    const trimmedName = newName.trim();
+    if (!trimmedName) {
+      return "Contact name is required.";
+    }
+    if (trimmedName.length < 2) {
+      return "Contact name must be at least 2 characters.";
+    }
+
+    const trimmedRel = newRelationship.trim();
+    if (!trimmedRel) {
+      return "Relationship is required.";
+    }
+    if (trimmedRel.length < 2) {
+      return "Relationship must be at least 2 characters.";
+    }
+
+    const trimmedPhone = newPhone.trim();
+    if (!trimmedPhone) {
+      return "Phone number is required.";
+    }
+
+    const cleanedPhone = trimmedPhone.replace(/[\s\-\(\)\.]/g, "");
+    if (cleanedPhone.length < 10) {
+      return "Phone number must have at least 10 digits.";
+    }
+
+    // Support Indian mobile numbers (10 digits, +91) and international formats (up to 15 digits)
+    const phoneRegex = /^\+?[0-9]{10,15}$/;
+    if (!phoneRegex.test(cleanedPhone)) {
+      return "Please enter a valid phone number (e.g. 9876543210 or +91 98765 43210).";
+    }
+
+    return null;
+  };
+
+  const handleAddContact = async () => {
+    setContactError(null);
+    setContactSuccess(null);
+
+    const validationError = validateNewContact();
+    if (validationError) {
+      setContactError(validationError);
+      return;
+    }
+
+    if (!token) {
+      setContactError("Session expired. Please sign in again.");
+      return;
+    }
+
+    setIsSavingContact(true);
+    try {
+      const res = await apiAddContact(token, {
+        name: newName.trim(),
+        relationship: newRelationship.trim(),
+        phone: newPhone.trim(),
+      });
+
+      if (res.success && res.contact) {
+        setNewName("");
+        setNewRelationship("");
+        setNewPhone("");
+        setContactSuccess(`✓ "${res.contact.name}" added to emergency contacts.`);
+        setContacts((prev) => [res.contact!, ...prev.filter((c) => c.id !== res.contact!.id)]);
+      } else {
+        setContactError(res.error || "Failed to add emergency contact.");
+      }
+    } catch (err: any) {
+      setContactError(err?.message || "An unexpected error occurred while adding contact.");
+    } finally {
+      setIsSavingContact(false);
+    }
+  };
+
+  const handleDeleteContact = async (contactId: string) => {
+    if (!token) {
+      setContactError("Session expired. Please sign in again.");
+      return;
+    }
+
+    setContactError(null);
+    setContactSuccess(null);
+    setDeletingContactId(contactId);
+
+    try {
+      const res = await apiDeleteContact(token, contactId);
+      if (res.success) {
+        setContacts((prev) => prev.filter((c) => c.id !== contactId));
+        setContactSuccess("✓ Emergency contact removed successfully.");
+      } else {
+        setContactError(res.error || "Failed to delete emergency contact.");
+      }
+    } catch (err: any) {
+      setContactError(err?.message || "Error deleting emergency contact.");
+    } finally {
+      setDeletingContactId(null);
+    }
+  };
+
+  const confirmDeleteContact = (contact: EmergencyContact) => {
+    if (Platform.OS === "web") {
+      if (
+        typeof window !== "undefined" &&
+        window.confirm(
+          `Are you sure you want to delete emergency contact "${contact.name}"?`
+        )
+      ) {
+        handleDeleteContact(contact.id);
+      }
+    } else {
+      Alert.alert(
+        "Delete Emergency Contact",
+        `Are you sure you want to delete "${contact.name}"?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => handleDeleteContact(contact.id),
+          },
+        ]
+      );
+    }
+  };
+
+  const validateNewWorker = (): string | null => {
+    const trimmedName = newWorkerName.trim();
+    if (!trimmedName) {
+      return "Responder full name is required.";
+    }
+    if (trimmedName.length < 2) {
+      return "Responder full name must be at least 2 characters.";
+    }
+
+    const trimmedPhone = newWorkerPhone.trim();
+    if (!trimmedPhone) {
+      return "Direct mobile number is required.";
+    }
+    const cleanedPhone = trimmedPhone.replace(/[\s\-\(\)\.]/g, "");
+    if (cleanedPhone.length < 10) {
+      return "Mobile number must have at least 10 digits.";
+    }
+    // Support Indian mobile numbers (10 digits, +91) and international formats (up to 15 digits)
+    const phoneRegex = /^\+?[0-9]{10,15}$/;
+    if (!phoneRegex.test(cleanedPhone)) {
+      return "Please enter a valid phone number (e.g. 9876543210 or +91 98765 43210).";
+    }
+
+    const trimmedBadge = newWorkerBadge.trim();
+    if (!trimmedBadge) {
+      return "Badge number is required (e.g. SW-501 or DEMO-01).";
+    }
+    if (trimmedBadge.length < 2) {
+      return "Badge number must be at least 2 characters.";
+    }
+
+    return null;
+  };
+
+  const handleRegisterWorker = async () => {
+    setWorkerError(null);
+    setWorkerSuccess(null);
+
+    const validationError = validateNewWorker();
+    if (validationError) {
+      setWorkerError(validationError);
+      return;
+    }
+
+    if (!token) {
+      setWorkerError("Authentication required. Please sign in to register a demo worker.");
+      return;
+    }
+
+    setIsSavingWorker(true);
+    try {
+      const res = await apiRegisterWorker(token, {
+        name: newWorkerName,
+        phone: newWorkerPhone,
+        badgeNumber: newWorkerBadge.toUpperCase(),
+        agency: newWorkerAgency.trim() || "Hybrid SOS Demo Responder Unit",
+      });
+
+      if (res.success) {
+        setWorkerSuccess(
+          `Demo Social Worker "${newWorkerName.trim()}" registered successfully! (Simulation only)`
+        );
+        setNewWorkerName("");
+        setNewWorkerPhone("");
+        setNewWorkerBadge("");
+        setNewWorkerAgency("");
+        await loadWorkers();
+      } else {
+        setWorkerError(res.error || "Failed to register demo social worker.");
+      }
+    } catch (err: any) {
+      setWorkerError(err?.message || "An unexpected error occurred while registering.");
+    } finally {
+      setIsSavingWorker(false);
+    }
+  };
+
+  const handleDeleteWorker = async (workerId: string, workerName: string) => {
+    if (!token) {
+      setWorkerError("Authentication required. Please sign in to delete a demo worker.");
+      return;
+    }
+
+    setWorkerError(null);
+    setWorkerSuccess(null);
+    setDeletingWorkerId(workerId);
+
+    try {
+      const res = await apiDeleteWorker(token, workerId);
+      if (res.success) {
+        setWorkers((prev) => prev.filter((w) => w.id !== workerId));
+        setWorkerSuccess(`Demo Social Worker "${workerName}" deleted successfully.`);
+        // Reassign active socialWorker if the deleted worker was currently selected
+        setSocialWorker((prev) => {
+          if (prev.id === workerId) {
+            const remaining = workers.filter((w) => w.id !== workerId);
+            return remaining.length > 0 ? remaining[0] : INITIAL_WORKER;
+          }
+          return prev;
+        });
+      } else {
+        setWorkerError(res.error || "Failed to delete demo social worker.");
+      }
+    } catch (err: any) {
+      setWorkerError(err?.message || "Error deleting demo social worker.");
+    } finally {
+      setDeletingWorkerId(null);
+    }
+  };
+
+  const confirmDeleteWorker = (worker: SocialWorker) => {
+    if (Platform.OS === "web") {
+      if (
+        typeof window !== "undefined" &&
+        window.confirm(
+          `Are you sure you want to delete Demo Social Worker "${worker.name}"?`
+        )
+      ) {
+        handleDeleteWorker(worker.id, worker.name);
+      }
+    } else {
+      Alert.alert(
+        "Delete Demo Social Worker",
+        `Are you sure you want to delete Demo Social Worker "${worker.name}"?`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => handleDeleteWorker(worker.id, worker.name),
+          },
+        ]
+      );
+    }
+  };
 
   const [emergencyHistory, setEmergencyHistory] = useState<EmergencyEvent[]>([
     {
@@ -434,7 +761,12 @@ export default function HomeScreen() {
           <TouchableOpacity
             style={styles.card}
             activeOpacity={0.75}
-            onPress={() => setModalType("CONTACTS")}
+            onPress={() => {
+              setContactError(null);
+              setContactSuccess(null);
+              setModalType("CONTACTS");
+              if (token) loadContacts();
+            }}
           >
             <View style={[styles.iconBox, styles.contactsIconBox]}>
               <Text style={styles.icon}>👨‍👩‍👧</Text>
@@ -455,14 +787,18 @@ export default function HomeScreen() {
                       isSosActive ? styles.pillBadgeTextAlert : null,
                     ]}
                   >
-                    {isSosActive ? "Alerted (2)" : "2 Configured"}
+                    {isSosActive
+                      ? `Alerted (${contacts.length})`
+                      : `${contacts.length} Configured`}
                   </Text>
                 </View>
               </View>
               <Text style={styles.cardSubtitle}>
                 {isSosActive
-                  ? "SMS sent to Mother & Sister with live location"
-                  : "Manage your primary and secondary trusted contacts"}
+                  ? `${contacts.map((c) => c.name).join(", ") || "Contacts"} notified via SOS broadcast`
+                  : contacts.length > 0
+                  ? `${contacts.length} contact${contacts.length === 1 ? "" : "s"} saved in your emergency network`
+                  : "Tap to add your trusted emergency contacts"}
               </Text>
             </View>
 
@@ -473,7 +809,12 @@ export default function HomeScreen() {
           <TouchableOpacity
             style={styles.card}
             activeOpacity={0.75}
-            onPress={() => setModalType("SOCIAL_WORKER")}
+            onPress={() => {
+              setWorkerError(null);
+              setWorkerSuccess(null);
+              setModalType("SOCIAL_WORKER");
+              loadWorkers();
+            }}
           >
             <View style={[styles.iconBox, styles.workerIconBox]}>
               <Text style={styles.icon}>👩‍💼</Text>
@@ -481,7 +822,7 @@ export default function HomeScreen() {
 
             <View style={styles.cardText}>
               <View style={styles.cardTitleRow}>
-                <Text style={styles.cardTitle}>Social Worker</Text>
+                <Text style={styles.cardTitle}>Demo Social Workers</Text>
                 <View
                   style={[
                     styles.pillBadge,
@@ -495,14 +836,20 @@ export default function HomeScreen() {
                       isSosActive ? styles.workerBadgeTextEnRoute : null,
                     ]}
                   >
-                    {isSosActive ? "En Route (7m)" : "Assigned"}
+                    {isSosActive
+                      ? "En Route (7m)"
+                      : workers.length > 0
+                      ? `${workers.length} Available`
+                      : "Simulation Ready"}
                   </Text>
                 </View>
               </View>
               <Text style={styles.cardSubtitle}>
                 {isSosActive
-                  ? `${socialWorker.name} dispatched to your location`
-                  : `${socialWorker.name} assigned for immediate care`}
+                  ? `${socialWorker?.name || "Demo Responder"} dispatched to your location`
+                  : workers.length > 0
+                  ? `${workers.length} demo responder${workers.length === 1 ? "" : "s"} on standby (College Simulation)`
+                  : "Tap to register or view demo emergency responders"}
               </Text>
             </View>
 
@@ -748,36 +1095,190 @@ export default function HomeScreen() {
                   </Text>
                 </View>
 
-                <ScrollView style={{ maxHeight: 250 }} showsVerticalScrollIndicator={false}>
+                <ScrollView
+                  style={{ maxHeight: 390 }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {/* Feedback Banners */}
+                  {contactSuccess ? (
+                    <View style={styles.contactSuccessBanner}>
+                      <Text style={styles.contactSuccessIcon}>✓</Text>
+                      <Text style={styles.contactSuccessText}>{contactSuccess}</Text>
+                    </View>
+                  ) : null}
+
+                  {contactError ? (
+                    <View style={styles.contactErrorBanner}>
+                      <Text style={styles.contactErrorIcon}>⚠️</Text>
+                      <Text style={styles.contactErrorText}>{contactError}</Text>
+                    </View>
+                  ) : null}
+
+                  {/* Registered Contacts Header */}
+                  <View style={styles.contactsSectionHeaderRow}>
+                    <Text style={styles.contactsSectionHeader}>
+                      REGISTERED CONTACTS ({contacts.length})
+                    </Text>
+                    {isLoadingContacts ? (
+                      <ActivityIndicator size="small" color="#4CA2FF" />
+                    ) : (
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={loadContacts}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text style={styles.contactsReloadText}>🔄 Refresh</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Empty state */}
+                  {!isLoadingContacts && contacts.length === 0 ? (
+                    <View style={styles.emptyContactsBox}>
+                      <Text style={styles.emptyContactsIcon}>👥</Text>
+                      <Text style={styles.emptyContactsTitle}>No Contacts Saved Yet</Text>
+                      <Text style={styles.emptyContactsSubtitle}>
+                        Add your trusted family members or friends below. When an emergency alert is triggered, all registered contacts will be notified.
+                      </Text>
+                    </View>
+                  ) : null}
+
+                  {/* Contacts List */}
                   {contacts.map((contact) => (
                     <View key={contact.id} style={styles.contactItem}>
-                      <View style={{ flex: 1 }}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
                         <Text style={styles.contactName}>{contact.name}</Text>
                         <Text style={styles.contactDetail}>
                           {contact.relationship} • {contact.phone}
                         </Text>
                       </View>
-                      <View
-                        style={[
-                          styles.contactBadge,
-                          contact.status === "Notified"
-                            ? styles.contactBadgeAlerted
-                            : styles.contactBadgeReady,
-                        ]}
-                      >
-                        <Text
+                      <View style={styles.contactActionsRow}>
+                        <View
                           style={[
-                            styles.contactBadgeText,
+                            styles.contactBadge,
                             contact.status === "Notified"
-                              ? { color: "#FF5252" }
-                              : { color: "#00E676" },
+                              ? styles.contactBadgeAlerted
+                              : styles.contactBadgeReady,
                           ]}
                         >
-                          {contact.status === "Notified" ? "Alerted via SMS" : "Ready"}
-                        </Text>
+                          <Text
+                            style={[
+                              styles.contactBadgeText,
+                              contact.status === "Notified"
+                                ? { color: "#FF5252" }
+                                : { color: "#00E676" },
+                            ]}
+                          >
+                            {contact.status === "Notified" ? "Alerted" : "Ready"}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={styles.deleteContactButton}
+                          activeOpacity={0.7}
+                          disabled={deletingContactId === contact.id}
+                          onPress={() => confirmDeleteContact(contact)}
+                          accessibilityLabel={`Delete contact ${contact.name}`}
+                        >
+                          {deletingContactId === contact.id ? (
+                            <ActivityIndicator size="small" color="#FF5252" />
+                          ) : (
+                            <Text style={styles.deleteContactIcon}>🗑️</Text>
+                          )}
+                        </TouchableOpacity>
                       </View>
                     </View>
                   ))}
+
+                  {/* Add New Contact Form Card */}
+                  <View style={styles.addContactCard}>
+                    <Text style={styles.addContactCardTitle}>+ ADD EMERGENCY CONTACT</Text>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>CONTACT NAME *</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. Priya Sharma"
+                        placeholderTextColor="#5E7E9E"
+                        value={newName}
+                        onChangeText={(t) => {
+                          setNewName(t);
+                          if (contactError) setContactError(null);
+                        }}
+                        autoCapitalize="words"
+                      />
+                    </View>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>RELATIONSHIP *</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. Mother, Father, Spouse, Friend"
+                        placeholderTextColor="#5E7E9E"
+                        value={newRelationship}
+                        onChangeText={(t) => {
+                          setNewRelationship(t);
+                          if (contactError) setContactError(null);
+                        }}
+                        autoCapitalize="words"
+                      />
+                      <View style={styles.chipsRow}>
+                        {["Mother", "Father", "Spouse", "Sibling", "Friend", "Doctor"].map((rel) => (
+                          <TouchableOpacity
+                            key={rel}
+                            style={[
+                              styles.chipButton,
+                              newRelationship === rel ? styles.chipButtonActive : null,
+                            ]}
+                            onPress={() => {
+                              setNewRelationship(rel);
+                              if (contactError) setContactError(null);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.chipButtonText,
+                                newRelationship === rel ? styles.chipButtonTextActive : null,
+                              ]}
+                            >
+                              {rel}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>PHONE NUMBER *</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. +91 98765 43210 or 9876543210"
+                        placeholderTextColor="#5E7E9E"
+                        value={newPhone}
+                        onChangeText={(t) => {
+                          setNewPhone(t);
+                          if (contactError) setContactError(null);
+                        }}
+                        keyboardType="phone-pad"
+                      />
+                    </View>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.saveContactButton,
+                        isSavingContact && styles.saveContactButtonDisabled,
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={handleAddContact}
+                      disabled={isSavingContact}
+                    >
+                      {isSavingContact ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.saveContactButtonText}>SAVE EMERGENCY CONTACT</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </ScrollView>
 
                 <View style={styles.dialogButtonsContainer}>
@@ -797,43 +1298,289 @@ export default function HomeScreen() {
               <View>
                 <View style={styles.dialogHeader}>
                   <Text style={styles.modalHeaderEmoji}>👩‍💼</Text>
-                  <Text style={styles.dialogTitle}>ASSIGNED SOCIAL WORKER</Text>
+                  <Text style={styles.dialogTitle}>DEMO SOCIAL WORKERS</Text>
                   <Text style={styles.dialogSubtitle}>
-                    Designated social care coordinator for emergency response and urgent assistance.
+                    Emergency care coordinators registered for college project simulation and dispatch testing.
                   </Text>
                 </View>
 
-                <View style={styles.dispatchDetailsCard}>
-                  <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Worker Name:</Text>
-                    <Text style={styles.dispatchValue}>{socialWorker.name}</Text>
-                  </View>
-                  <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Badge Number:</Text>
-                    <Text style={styles.dispatchValue}>{socialWorker.badgeNumber}</Text>
-                  </View>
-                  <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Agency:</Text>
-                    <Text style={styles.dispatchValue}>{socialWorker.agency}</Text>
-                  </View>
-                  <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Direct Hotline:</Text>
-                    <Text style={styles.dispatchValue}>{socialWorker.phone}</Text>
-                  </View>
-                  <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Current Status:</Text>
-                    <Text
-                      style={[
-                        styles.dispatchValue,
-                        { color: isSosActive ? "#FF5252" : "#00E676" },
-                      ]}
-                    >
-                      {isSosActive
-                        ? `En Route to Location (ETA: ${socialWorker.eta || "7 mins"})`
-                        : "Assigned & On Call"}
+                {/* Simulation Disclaimer Banner */}
+                <View style={styles.workerDisclaimerBanner}>
+                  <Text style={styles.workerDisclaimerIcon}>⚠️</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.workerDisclaimerTitle}>
+                      SIMULATION DEMO ONLY
+                    </Text>
+                    <Text style={styles.workerDisclaimerText}>
+                      Responders registered here are for demonstration testing and are NOT officially verified emergency or medical personnel.
                     </Text>
                   </View>
                 </View>
+
+                <ScrollView
+                  style={{ maxHeight: 390 }}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {/* Feedback Banners */}
+                  {workerSuccess ? (
+                    <View style={styles.contactSuccessBanner}>
+                      <Text style={styles.contactSuccessIcon}>✓</Text>
+                      <Text style={styles.contactSuccessText}>{workerSuccess}</Text>
+                    </View>
+                  ) : null}
+
+                  {workerError ? (
+                    <View style={styles.contactErrorBanner}>
+                      <Text style={styles.contactErrorIcon}>⚠️</Text>
+                      <Text style={styles.contactErrorText}>{workerError}</Text>
+                    </View>
+                  ) : null}
+
+                  {/* Registered Workers Header */}
+                  <View style={styles.contactsSectionHeaderRow}>
+                    <Text style={styles.contactsSectionHeader}>
+                      REGISTERED WORKERS ({workers.length})
+                    </Text>
+                    {isLoadingWorkers ? (
+                      <ActivityIndicator size="small" color="#4CA2FF" />
+                    ) : (
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={loadWorkers}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Text style={styles.contactsReloadText}>🔄 Refresh</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Empty state */}
+                  {!isLoadingWorkers && workers.length === 0 ? (
+                    <View style={styles.emptyContactsBox}>
+                      <Text style={styles.emptyContactsIcon}>👩‍💼</Text>
+                      <Text style={styles.emptyContactsTitle}>No Social Workers Found</Text>
+                      <Text style={styles.emptyContactsSubtitle}>
+                        Register a friend or test responder below to simulate emergency social dispatch.
+                      </Text>
+                    </View>
+                  ) : null}
+
+                  {/* Live Workers List */}
+                  {workers.map((w) => {
+                    const isAssigned = socialWorker?.badgeNumber === w.badgeNumber;
+                    return (
+                      <View key={w.id || w.badgeNumber} style={styles.workerItemCard}>
+                        <View style={styles.workerItemHeaderRow}>
+                          <View style={{ flex: 1, paddingRight: 8 }}>
+                            <Text style={styles.workerItemName}>{w.name}</Text>
+                            <Text style={styles.workerItemAgency}>
+                              {w.badgeNumber} • {w.agency}
+                            </Text>
+                          </View>
+                          <View style={styles.workerActionsRow}>
+                            <View
+                              style={[
+                                styles.workerStatusBadge,
+                                w.status === "Available"
+                                  ? styles.workerStatusBadgeAvailable
+                                  : styles.workerStatusBadgeEnRoute,
+                              ]}
+                            >
+                              <Text
+                                style={[
+                                  styles.workerStatusBadgeText,
+                                  {
+                                    color:
+                                      w.status === "Available" ? "#00E676" : "#FF5252",
+                                  },
+                                ]}
+                              >
+                                {isSosActive && isAssigned
+                                  ? `En Route (${w.currentEta || w.eta || "7m"})`
+                                  : w.status || "Available"}
+                              </Text>
+                            </View>
+
+                            {/* Delete button (only for unverified demo workers) */}
+                            {(!w.isVerified || w.isDemo) && (
+                              <TouchableOpacity
+                                style={styles.deleteContactButton}
+                                activeOpacity={0.7}
+                                disabled={deletingWorkerId === w.id}
+                                onPress={() => confirmDeleteWorker(w)}
+                                accessibilityLabel={`Delete demo worker ${w.name}`}
+                              >
+                                {deletingWorkerId === w.id ? (
+                                  <ActivityIndicator size="small" color="#FF5252" />
+                                ) : (
+                                  <Text style={styles.deleteContactIcon}>🗑️</Text>
+                                )}
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        </View>
+
+                        {/* Prominent Demo Worker Label */}
+                        <View style={styles.unverifiedLabelBox}>
+                          <Text style={styles.unverifiedLabelText}>
+                            🛡️ Demo Social Worker — Not Officially Verified
+                          </Text>
+                        </View>
+
+                        <View style={styles.workerDetailsRow}>
+                          <Text style={styles.workerDetailLabel}>Direct Hotline:</Text>
+                          <Text style={styles.workerDetailPhone}>{w.phone}</Text>
+                        </View>
+
+                        {isAssigned && (
+                          <View style={styles.activeAssignmentTag}>
+                            <Text style={styles.activeAssignmentTagText}>
+                              ✓ Designated Dispatch Responder
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                    );
+                  })}
+
+                  {/* Add Demo Social Worker Form */}
+                  <View style={styles.addContactCard}>
+                    <Text style={styles.addContactCardTitle}>+ REGISTER DEMO SOCIAL WORKER</Text>
+                    <Text style={styles.addWorkerFormHelp}>
+                      Register a friend or test coordinator to simulate social worker dispatch.
+                    </Text>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>FULL NAME *</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. Maya Iyer, MSW"
+                        placeholderTextColor="#5E7E9E"
+                        value={newWorkerName}
+                        onChangeText={(t) => {
+                          setNewWorkerName(t);
+                          if (workerError) setWorkerError(null);
+                        }}
+                        autoCapitalize="words"
+                      />
+                    </View>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>BADGE NUMBER *</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. DEMO-501 or SW-9021"
+                        placeholderTextColor="#5E7E9E"
+                        value={newWorkerBadge}
+                        onChangeText={(t) => {
+                          setNewWorkerBadge(t);
+                          if (workerError) setWorkerError(null);
+                        }}
+                        autoCapitalize="characters"
+                      />
+                      <View style={styles.chipsRow}>
+                        {["DEMO-101", "DEMO-202", "SW-7701", "SW-8822"].map((badge) => (
+                          <TouchableOpacity
+                            key={badge}
+                            style={[
+                              styles.chipButton,
+                              newWorkerBadge === badge ? styles.chipButtonActive : null,
+                            ]}
+                            onPress={() => {
+                              setNewWorkerBadge(badge);
+                              if (workerError) setWorkerError(null);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.chipButtonText,
+                                newWorkerBadge === badge ? styles.chipButtonTextActive : null,
+                              ]}
+                            >
+                              {badge}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>MOBILE NUMBER (HOTLINE) *</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. +91 98765 43210 or 9876543210"
+                        placeholderTextColor="#5E7E9E"
+                        value={newWorkerPhone}
+                        onChangeText={(t) => {
+                          setNewWorkerPhone(t);
+                          if (workerError) setWorkerError(null);
+                        }}
+                        keyboardType="phone-pad"
+                      />
+                    </View>
+
+                    <View style={styles.miniInputGroup}>
+                      <Text style={styles.miniInputLabel}>AGENCY / ORGANIZATION</Text>
+                      <TextInput
+                        style={styles.miniTextInput}
+                        placeholder="e.g. Metropolitan Crisis Social Care"
+                        placeholderTextColor="#5E7E9E"
+                        value={newWorkerAgency}
+                        onChangeText={(t) => {
+                          setNewWorkerAgency(t);
+                          if (workerError) setWorkerError(null);
+                        }}
+                        autoCapitalize="words"
+                      />
+                      <View style={styles.chipsRow}>
+                        {[
+                          "Crisis Social Care",
+                          "Community Emergency Response",
+                          "Trauma Crisis Dispatch",
+                        ].map((ag) => (
+                          <TouchableOpacity
+                            key={ag}
+                            style={[
+                              styles.chipButton,
+                              newWorkerAgency === ag ? styles.chipButtonActive : null,
+                            ]}
+                            onPress={() => {
+                              setNewWorkerAgency(ag);
+                              if (workerError) setWorkerError(null);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.chipButtonText,
+                                newWorkerAgency === ag ? styles.chipButtonTextActive : null,
+                              ]}
+                            >
+                              {ag}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.saveContactButton,
+                        { backgroundColor: "#0288D1" },
+                        isSavingWorker && styles.saveContactButtonDisabled,
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={handleRegisterWorker}
+                      disabled={isSavingWorker}
+                    >
+                      {isSavingWorker ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.saveContactButtonText}>REGISTER DEMO SOCIAL WORKER</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </ScrollView>
 
                 <View style={styles.dialogButtonsContainer}>
                   <TouchableOpacity
@@ -1779,5 +2526,362 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 4,
     fontStyle: "italic",
+  },
+
+  contactActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  deleteContactButton: {
+    padding: 6,
+    borderRadius: 8,
+    backgroundColor: "rgba(229, 57, 53, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(229, 57, 53, 0.3)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  deleteContactIcon: {
+    fontSize: 14,
+  },
+
+  emptyContactsBox: {
+    backgroundColor: "#0B1D33",
+    borderColor: "#1E4775",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    marginBottom: 12,
+  },
+
+  emptyContactsIcon: {
+    fontSize: 28,
+    marginBottom: 6,
+  },
+
+  emptyContactsTitle: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+
+  emptyContactsSubtitle: {
+    color: "#8EB8E6",
+    fontSize: 12,
+    textAlign: "center",
+    lineHeight: 16,
+  },
+
+  contactsSectionHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+    marginTop: 4,
+  },
+
+  contactsSectionHeader: {
+    color: "#8EB8E6",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 1,
+  },
+
+  contactsReloadText: {
+    color: "#4CA2FF",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  contactSuccessBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(0, 230, 118, 0.15)",
+    borderColor: "rgba(0, 230, 118, 0.4)",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
+  },
+
+  contactSuccessIcon: {
+    color: "#00E676",
+    fontSize: 14,
+    fontWeight: "800",
+  },
+
+  contactSuccessText: {
+    color: "#00E676",
+    fontSize: 12,
+    fontWeight: "600",
+    flex: 1,
+  },
+
+  contactErrorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(229, 57, 53, 0.15)",
+    borderColor: "rgba(229, 57, 53, 0.4)",
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    gap: 8,
+  },
+
+  contactErrorIcon: {
+    fontSize: 14,
+  },
+
+  contactErrorText: {
+    color: "#FF8A80",
+    fontSize: 12,
+    fontWeight: "600",
+    flex: 1,
+  },
+
+  addContactCard: {
+    backgroundColor: "#0B1D33",
+    borderColor: "#1E4775",
+    borderWidth: 1.2,
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+
+  addContactCardTitle: {
+    color: "#4CA2FF",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+
+  miniInputGroup: {
+    marginBottom: 10,
+  },
+
+  miniInputLabel: {
+    color: "#8EB8E6",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    marginBottom: 4,
+  },
+
+  miniTextInput: {
+    backgroundColor: "#071424",
+    borderColor: "#1E4775",
+    borderWidth: 1,
+    borderRadius: 10,
+    color: "#FFFFFF",
+    fontSize: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+
+  chipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 6,
+  },
+
+  chipButton: {
+    backgroundColor: "#102A48",
+    borderColor: "#1E4775",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+
+  chipButtonActive: {
+    backgroundColor: "rgba(32, 138, 239, 0.3)",
+    borderColor: "#208AEF",
+  },
+
+  chipButtonText: {
+    color: "#AFC4DD",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  chipButtonTextActive: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+  },
+
+  saveContactButton: {
+    backgroundColor: "#208AEF",
+    borderRadius: 10,
+    height: 42,
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 6,
+  },
+
+  saveContactButtonDisabled: {
+    opacity: 0.6,
+  },
+
+  saveContactButtonText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+  },
+
+  workerDisclaimerBanner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    backgroundColor: "rgba(255, 171, 0, 0.12)",
+    borderColor: "rgba(255, 171, 0, 0.4)",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+
+  workerDisclaimerIcon: {
+    fontSize: 18,
+    marginTop: 2,
+  },
+
+  workerDisclaimerTitle: {
+    color: "#FFD54F",
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    marginBottom: 2,
+  },
+
+  workerDisclaimerText: {
+    color: "#FFE082",
+    fontSize: 11,
+    lineHeight: 15,
+  },
+
+  workerItemCard: {
+    backgroundColor: "#0B1D33",
+    borderColor: "#1E4775",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+  },
+
+  workerItemHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 6,
+  },
+
+  workerActionsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  workerItemName: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+
+  workerItemAgency: {
+    color: "#8EB8E6",
+    fontSize: 11,
+    marginTop: 2,
+  },
+
+  workerStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+
+  workerStatusBadgeAvailable: {
+    backgroundColor: "rgba(0, 230, 118, 0.15)",
+    borderColor: "rgba(0, 230, 118, 0.4)",
+  },
+
+  workerStatusBadgeEnRoute: {
+    backgroundColor: "rgba(229, 57, 53, 0.15)",
+    borderColor: "rgba(229, 57, 53, 0.4)",
+  },
+
+  workerStatusBadgeText: {
+    fontSize: 11,
+    fontWeight: "700",
+  },
+
+  unverifiedLabelBox: {
+    backgroundColor: "rgba(255, 171, 0, 0.1)",
+    borderColor: "rgba(255, 171, 0, 0.3)",
+    borderWidth: 1,
+    borderRadius: 6,
+    paddingVertical: 3,
+    paddingHorizontal: 6,
+    alignSelf: "flex-start",
+    marginVertical: 4,
+  },
+
+  unverifiedLabelText: {
+    color: "#FFB300",
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+
+  workerDetailsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+  },
+
+  workerDetailLabel: {
+    color: "#5E7E9E",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+
+  workerDetailPhone: {
+    color: "#4CA2FF",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+
+  activeAssignmentTag: {
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(30, 71, 117, 0.5)",
+  },
+
+  activeAssignmentTagText: {
+    color: "#00E676",
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+
+  addWorkerFormHelp: {
+    color: "#8EB8E6",
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: -8,
+    marginBottom: 10,
   },
 });
