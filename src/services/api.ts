@@ -486,3 +486,159 @@ export async function apiDeleteWorker(
   }
 }
 
+export interface AlertApiResponse {
+  success: boolean;
+  message?: string;
+  alert?: any;
+  alerts?: any[];
+  count?: number;
+  alreadyActive?: boolean;
+  error?: string;
+}
+
+export interface TriggerSosPayload {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+  address?: string;
+  notes?: string;
+  isSimulatedLocation?: boolean;
+  locationSource?: string;
+  googleMapsUrl?: string;
+}
+
+/**
+ * Trigger an SOS Emergency Alert
+ * Route: POST /api/alerts/trigger
+ */
+export async function apiTriggerSOS(
+  token: string,
+  payload: TriggerSosPayload
+): Promise<AlertApiResponse> {
+  const baseUrl = getApiBaseUrl();
+  try {
+    const response = await fetch(`${baseUrl}/api/alerts/trigger`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: data.message || `Failed to trigger SOS alert (HTTP ${response.status})`,
+      };
+    }
+
+    return {
+      success: true,
+      alert: data.alert,
+      message: data.message,
+      alreadyActive: data.alreadyActive,
+    };
+  } catch (err: any) {
+    const isNetworkError =
+      err?.message?.includes("Network request failed") || err?.name === "TypeError";
+
+    return {
+      success: false,
+      error: isNetworkError
+        ? `Cannot reach backend at ${baseUrl}. Ensure Express is running on port 5000 and your phone is on Wi-Fi.`
+        : err?.message || "Error triggering SOS alert.",
+    };
+  }
+}
+
+/**
+ * Get Emergency Alert History for the authenticated user
+ * Route: GET /api/alerts/history
+ */
+export async function apiGetAlertHistory(token: string): Promise<AlertApiResponse> {
+  const baseUrl = getApiBaseUrl();
+  try {
+    const response = await fetch(`${baseUrl}/api/alerts/history`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: data.message || `Failed to fetch alert history (HTTP ${response.status})`,
+      };
+    }
+
+    return {
+      success: true,
+      alerts: Array.isArray(data.alerts) ? data.alerts : [],
+      count: data.count || 0,
+    };
+  } catch (err: any) {
+    const isNetworkError =
+      err?.message?.includes("Network request failed") || err?.name === "TypeError";
+
+    return {
+      success: false,
+      error: isNetworkError
+        ? `Cannot reach backend at ${baseUrl}. Ensure Express is running on port 5000 and your phone is on Wi-Fi.`
+        : err?.message || "Error fetching alert history.",
+    };
+  }
+}
+
+/**
+ * Resolve an active SOS Emergency Alert
+ * Route: PUT /api/alerts/:id/resolve
+ */
+export async function apiResolveSOS(
+  token: string,
+  alertId: string,
+  notes?: string
+): Promise<AlertApiResponse> {
+  const baseUrl = getApiBaseUrl();
+  try {
+    const response = await fetch(`${baseUrl}/api/alerts/${alertId}/resolve`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ notes }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: data.message || `Failed to resolve SOS alert (HTTP ${response.status})`,
+      };
+    }
+
+    return {
+      success: true,
+      alert: data.alert,
+      message: data.message,
+    };
+  } catch (err: any) {
+    const isNetworkError =
+      err?.message?.includes("Network request failed") || err?.name === "TypeError";
+
+    return {
+      success: false,
+      error: isNetworkError
+        ? `Cannot reach backend at ${baseUrl}. Ensure Express is running on port 5000 and your phone is on Wi-Fi.`
+        : err?.message || "Error resolving SOS alert.",
+    };
+  }
+}
+

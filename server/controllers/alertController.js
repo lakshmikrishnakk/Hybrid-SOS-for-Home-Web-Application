@@ -37,12 +37,36 @@ const generateUniqueAlertId = async () => {
 // @access  Private (JWT Protected)
 const triggerSOS = async (req, res) => {
   try {
-    const { latitude, longitude, accuracy, address, notes } = req.body;
+    const {
+      latitude,
+      longitude,
+      accuracy,
+      address,
+      notes,
+      isSimulatedLocation,
+      locationSource,
+      googleMapsUrl,
+    } = req.body;
 
     if (latitude === undefined || longitude === undefined) {
       return res.status(400).json({
         success: false,
         message: "Latitude and longitude coordinates are required to trigger an SOS alert.",
+      });
+    }
+
+    // 0. Prevent duplicate active dispatches for the same user
+    const existingActiveAlert = await EmergencyAlert.findOne({
+      userId: req.user._id,
+      status: "ACTIVE_DISPATCH",
+    });
+
+    if (existingActiveAlert) {
+      return res.status(200).json({
+        success: true,
+        message: "An active SOS emergency alert is already in progress.",
+        alert: existingActiveAlert,
+        alreadyActive: true,
       });
     }
 
@@ -59,13 +83,8 @@ const triggerSOS = async (req, res) => {
       notifiedAt: new Date(),
     }));
 
-    // Update contacts status to 'Notified' for simulation
-    if (userContacts.length > 0) {
-      await Contact.updateMany(
-        { userId: req.user._id },
-        { status: "Notified" }
-      );
-    }
+    // In Phase 1, SMS notification is not yet dispatched; contacts remain 'Ready'
+    // (Truth in notification: do not falsely mark contacts as notified)
 
     // 3. Find and assign an available social worker
     let assignedWorkerData = null;
@@ -94,6 +113,9 @@ const triggerSOS = async (req, res) => {
     }
 
     // 4. Create Emergency Alert in MongoDB
+    const isSimulated = Boolean(isSimulatedLocation);
+    const resolvedMapsUrl = isSimulated ? undefined : (googleMapsUrl || `https://maps.google.com/?q=${latitude},${longitude}`);
+
     const alert = await EmergencyAlert.create({
       alertId,
       userId: req.user._id,
@@ -104,14 +126,21 @@ const triggerSOS = async (req, res) => {
         latitude: Number(latitude),
         longitude: Number(longitude),
         accuracy: accuracy !== undefined ? Number(accuracy) : 15,
-        address: address || "Active GPS Coordinates",
+        address: address || (isSimulated ? "Simulation Fallback Coordinates" : "Active GPS Coordinates"),
+        isSimulated,
+        source: locationSource || (isSimulated ? "DEMO_FALLBACK" : "REAL_GPS"),
+        googleMapsUrl: resolvedMapsUrl,
       },
+      isSimulatedLocation: isSimulated,
+      googleMapsUrl: resolvedMapsUrl,
       status: "ACTIVE_DISPATCH",
       assignedWorker: assignedWorkerData,
       notifiedContacts,
       notes:
         notes ||
-        "Urgent beacon triggered by user. High-priority dispatch active.",
+        (isSimulated
+          ? "Urgent beacon triggered by user [SIMULATION DEMO - NOT REAL GPS]."
+          : "Urgent beacon triggered by user [REAL DEVICE GPS]."),
     });
 
     return res.status(201).json({

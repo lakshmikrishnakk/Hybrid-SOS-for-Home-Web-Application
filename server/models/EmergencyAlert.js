@@ -41,6 +41,25 @@ const emergencyAlertSchema = new mongoose.Schema(
         type: String,
         default: "Active GPS Coordinates",
       },
+      isSimulated: {
+        type: Boolean,
+        default: false,
+      },
+      source: {
+        type: String,
+        enum: ["REAL_GPS", "WEB_GEOLOCATION", "DEMO_FALLBACK"],
+        default: "REAL_GPS",
+      },
+      googleMapsUrl: {
+        type: String,
+      },
+    },
+    isSimulatedLocation: {
+      type: Boolean,
+      default: false,
+    },
+    googleMapsUrl: {
+      type: String,
     },
     status: {
       type: String,

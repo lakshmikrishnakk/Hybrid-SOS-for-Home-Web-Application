@@ -23,6 +23,10 @@ import {
   apiGetWorkers,
   apiRegisterWorker,
   apiDeleteWorker,
+  apiTriggerSOS,
+  apiGetAlertHistory,
+  apiResolveSOS,
+  TriggerSosPayload,
 } from "@/services/api";
 import { fetchDeviceLocation, formatCoordinates } from "@/services/location";
 
@@ -57,6 +61,10 @@ export default function HomeScreen() {
   const [currentLocation, setCurrentLocation] = useState<LocationCoords | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
   const [activeEvent, setActiveEvent] = useState<EmergencyEvent | null>(null);
+  const [isTriggeringSos, setIsTriggeringSos] = useState<boolean>(false);
+  const [isResolvingSos, setIsResolvingSos] = useState<boolean>(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState<boolean>(false);
+  const [sosError, setSosError] = useState<string | null>(null);
 
   const [contacts, setContacts] = useState<EmergencyContact[]>(INITIAL_CONTACTS);
   const [socialWorker, setSocialWorker] = useState<SocialWorker>(INITIAL_WORKER);
@@ -127,6 +135,86 @@ export default function HomeScreen() {
     }
   };
 
+  const loadAlertHistory = async () => {
+    if (!token) return;
+    setIsLoadingHistory(true);
+    try {
+      const res = await apiGetAlertHistory(token);
+      if (res.success && Array.isArray(res.alerts)) {
+        const mapped: EmergencyEvent[] = res.alerts.map((a: any) => {
+          const created = new Date(a.createdAt || Date.now());
+          const timeFormatted = created.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          });
+          const dateFormatted = created.toLocaleDateString([], {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          });
+          const isSim = Boolean(a.isSimulatedLocation || a.location?.isSimulated);
+          const rawContacts = Array.isArray(a.notifiedContacts) ? a.notifiedContacts : [];
+          const contactLabels =
+            rawContacts.length > 0
+              ? rawContacts.map(
+                  (c: any) =>
+                    `${c.name} (${c.relationship || "Contact"}) - Registered (Pending SMS)`
+                )
+              : ["No emergency contacts configured"];
+
+          return {
+            id: a.alertId || a._id,
+            userName: a.userName || user?.fullName || "Active Citizen",
+            userEmail: a.userEmail || user?.email || "",
+            userPhone: a.userPhone || user?.phoneNumber || "",
+            timestamp: `${timeFormatted}, ${dateFormatted}`,
+            dateStr: a.status === "ACTIVE_DISPATCH" ? "Active Now" : "Resolved",
+            status: (a.status as "ACTIVE_DISPATCH" | "RESOLVED") || "RESOLVED",
+            location:
+              a.location?.address ||
+              `${a.location?.latitude}° N, ${a.location?.longitude}° E`,
+            latitude: a.location?.latitude,
+            longitude: a.location?.longitude,
+            notifiedContacts: contactLabels,
+            assignedWorker: a.assignedWorker
+              ? `${a.assignedWorker.name} (${a.assignedWorker.badgeNumber || "Responder"})`
+              : "Metropolitan Crisis Care",
+            notes: a.notes,
+            isSimulatedLocation: isSim,
+            googleMapsUrl: !isSim ? a.googleMapsUrl || a.location?.googleMapsUrl : undefined,
+          };
+        });
+
+        setEmergencyHistory(mapped);
+
+        // Restore active dispatch if one is active in database
+        const active = res.alerts.find((a: any) => a.status === "ACTIVE_DISPATCH");
+        if (active) {
+          const activeMapped = mapped.find((m) => m.id === active.alertId || m.id === active._id);
+          if (activeMapped) {
+            setActiveEvent(activeMapped);
+            setIsSosActive(true);
+            if (active.assignedWorker) {
+              setSocialWorker((prev) => ({
+                ...prev,
+                name: active.assignedWorker.name,
+                badgeNumber: active.assignedWorker.badgeNumber || prev.badgeNumber,
+                phone: active.assignedWorker.phone || prev.phone,
+                status: "En Route",
+                eta: active.assignedWorker.eta || "7 mins",
+              }));
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error("Failed to load emergency history:", err);
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
   useEffect(() => {
     loadWorkers();
   }, []);
@@ -135,6 +223,7 @@ export default function HomeScreen() {
     if (token) {
       loadContacts();
       loadWorkers();
+      loadAlertHistory();
     }
   }, [token]);
 
@@ -466,99 +555,220 @@ export default function HomeScreen() {
   };
 
   const handleConfirmSOS = async () => {
-    const loc = currentLocation || (await fetchLocation());
-    const now = new Date();
-    const timeFormatted = now.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    const dateFormatted = now.toLocaleDateString([], {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
+    if (isTriggeringSos) return;
+    setIsTriggeringSos(true);
+    setSosError(null);
 
-    const eventId = `SOS-${Date.now().toString().slice(-6)}`;
-    const locationDisplay = loc.isSimulated
-      ? `${loc.address} [DEMO SIMULATION]`
-      : `${loc.address} (±${loc.accuracy}m)`;
+    try {
+      const loc = currentLocation || (await fetchLocation());
+      const now = new Date();
+      const timeFormatted = now.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      const dateFormatted = now.toLocaleDateString([], {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
 
-    const newEvent: EmergencyEvent = {
-      id: eventId,
-      userName: user?.fullName || "Active Citizen",
-      userEmail: user?.email || "demo@hybridsos.com",
-      userPhone: user?.phoneNumber || "+1 (555) 234-5678",
-      timestamp: `${timeFormatted}, ${dateFormatted}`,
-      dateStr: "Active Now",
-      status: "ACTIVE_DISPATCH",
-      location: locationDisplay,
-      latitude: loc.latitude,
-      longitude: loc.longitude,
-      isSimulatedLocation: loc.isSimulated,
-      googleMapsUrl: !loc.isSimulated ? loc.googleMapsUrl : undefined,
-      notifiedContacts: [
-        "Priya Sharma (Mother) - SMS Sent",
-        "Maya Sharma (Sister) - SMS Sent",
-        "Central Dispatch EMS (911) - Alert Received",
-      ],
-      assignedWorker: "Sarah Jenkins, LCSW (Badge #SW-4821)",
-      notes: loc.isSimulated
-        ? "Urgent beacon triggered by user. High-priority dispatch active (Simulation Coordinates)."
-        : "Urgent beacon triggered by user. Real device GPS coordinates transmitted.",
-    };
+      const locationDisplay = loc.isSimulated
+        ? `${loc.address} [DEMO SIMULATION]`
+        : `${loc.address} (±${loc.accuracy || 15}m)`;
 
-    setActiveEvent(newEvent);
-    setIsSosActive(true);
+      // If user has a valid session token, record alert in MongoDB via backend API
+      if (token) {
+        const payload: TriggerSosPayload = {
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          address: loc.address,
+          isSimulatedLocation: loc.isSimulated,
+          locationSource: loc.source,
+          googleMapsUrl: !loc.isSimulated ? loc.googleMapsUrl : undefined,
+          notes: loc.isSimulated
+            ? "Urgent beacon triggered by user [SIMULATION DEMO - NOT REAL GPS]."
+            : "Urgent beacon triggered by user [REAL DEVICE GPS].",
+        };
 
-    // Update contacts status
-    setContacts((prev) =>
-      prev.map((c) => ({
-        ...c,
-        status: "Notified",
-      }))
-    );
+        const res = await apiTriggerSOS(token, payload);
 
-    // Update social worker status
-    setSocialWorker((prev) => ({
-      ...prev,
-      status: "En Route",
-      eta: "7 mins",
-    }));
+        if (!res.success || !res.alert) {
+          const errMsg = res.error || "Unable to transmit SOS emergency alert to server.";
+          setSosError(errMsg);
+          Alert.alert("Emergency Alert Failed", errMsg);
+          setIsTriggeringSos(false);
+          return;
+        }
 
-    // Prepend to history
-    setEmergencyHistory((prev) => [newEvent, ...prev]);
+        const backendAlert = res.alert;
+        const eventId = backendAlert.alertId || backendAlert._id || `SOS-${Date.now().toString().slice(-6)}`;
 
-    // Open success modal
-    setModalType("SOS_SUCCESS");
+        // Use user's real registered contacts list with clear "SMS Pending Phase 2" truthfulness
+        const rawAlertContacts = Array.isArray(backendAlert.notifiedContacts)
+          ? backendAlert.notifiedContacts
+          : [];
+        const contactLabels =
+          contacts.length > 0
+            ? contacts.map((c) => `${c.name} (${c.relationship}) - Registered (SMS Pending Phase 2)`)
+            : rawAlertContacts.length > 0
+            ? rawAlertContacts.map(
+                (c: any) => `${c.name} (${c.relationship}) - Registered (SMS Pending Phase 2)`
+              )
+            : ["No emergency contacts registered"];
+
+        const assignedWorkerLabel = backendAlert.assignedWorker
+          ? `${backendAlert.assignedWorker.name} (${backendAlert.assignedWorker.badgeNumber || "Assigned"})`
+          : `${socialWorker.name} (${socialWorker.badgeNumber || "Assigned"})`;
+
+        const newEvent: EmergencyEvent = {
+          id: eventId,
+          userName: backendAlert.userName || user?.fullName || "Active Citizen",
+          userEmail: backendAlert.userEmail || user?.email || "demo@hybridsos.com",
+          userPhone: backendAlert.userPhone || user?.phoneNumber || "",
+          timestamp: `${timeFormatted}, ${dateFormatted}`,
+          dateStr: "Active Now",
+          status: "ACTIVE_DISPATCH",
+          location: locationDisplay,
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          isSimulatedLocation: loc.isSimulated,
+          googleMapsUrl: !loc.isSimulated
+            ? loc.googleMapsUrl || backendAlert.googleMapsUrl
+            : undefined,
+          notifiedContacts: contactLabels,
+          assignedWorker: assignedWorkerLabel,
+          notes: backendAlert.notes,
+        };
+
+        setActiveEvent(newEvent);
+        setIsSosActive(true);
+
+        // Update social worker status from backend assignment
+        if (backendAlert.assignedWorker) {
+          setSocialWorker((prev) => ({
+            ...prev,
+            name: backendAlert.assignedWorker.name || prev.name,
+            badgeNumber: backendAlert.assignedWorker.badgeNumber || prev.badgeNumber,
+            phone: backendAlert.assignedWorker.phone || prev.phone,
+            status: "En Route",
+            eta: backendAlert.assignedWorker.eta || "7 mins",
+          }));
+        } else {
+          setSocialWorker((prev) => ({
+            ...prev,
+            status: "En Route",
+            eta: "7 mins",
+          }));
+        }
+
+        // Keep contacts marked as Ready (truthful: SMS provider is Phase 2)
+        setContacts((prev) =>
+          prev.map((c) => ({
+            ...c,
+            status: "Ready",
+          }))
+        );
+
+        // Prepend new event to history
+        setEmergencyHistory((prev) => [newEvent, ...prev.filter((e) => e.id !== newEvent.id)]);
+
+        // Open dispatch success modal
+        setModalType("SOS_SUCCESS");
+      } else {
+        // Fallback for offline / unauthenticated demo
+        const eventId = `SOS-${Date.now().toString().slice(-6)}`;
+        const contactLabels =
+          contacts.length > 0
+            ? contacts.map((c) => `${c.name} (${c.relationship}) - Registered (SMS Pending Phase 2)`)
+            : ["No emergency contacts registered"];
+
+        const newEvent: EmergencyEvent = {
+          id: eventId,
+          userName: user?.fullName || "Active Citizen",
+          userEmail: user?.email || "demo@hybridsos.com",
+          userPhone: user?.phoneNumber || "+1 (555) 234-5678",
+          timestamp: `${timeFormatted}, ${dateFormatted}`,
+          dateStr: "Active Now",
+          status: "ACTIVE_DISPATCH",
+          location: locationDisplay,
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          isSimulatedLocation: loc.isSimulated,
+          googleMapsUrl: !loc.isSimulated ? loc.googleMapsUrl : undefined,
+          notifiedContacts: contactLabels,
+          assignedWorker: `${socialWorker.name} (${socialWorker.badgeNumber})`,
+          notes: loc.isSimulated
+            ? "Urgent beacon triggered in offline simulation mode."
+            : "Urgent beacon triggered with real device GPS coordinates.",
+        };
+
+        setActiveEvent(newEvent);
+        setIsSosActive(true);
+        setSocialWorker((prev) => ({
+          ...prev,
+          status: "En Route",
+          eta: "7 mins",
+        }));
+        setEmergencyHistory((prev) => [newEvent, ...prev]);
+        setModalType("SOS_SUCCESS");
+      }
+    } catch (err: any) {
+      console.error("SOS confirmation error:", err);
+      Alert.alert("Emergency Error", err?.message || "An unexpected error occurred triggering SOS.");
+    } finally {
+      setIsTriggeringSos(false);
+    }
   };
 
-  const handleResolveSOS = () => {
-    setIsSosActive(false);
+  const handleResolveSOS = async () => {
+    if (isResolvingSos) return;
+    setIsResolvingSos(true);
 
-    if (activeEvent) {
-      setEmergencyHistory((prev) =>
-        prev.map((item) =>
-          item.id === activeEvent.id ? { ...item, status: "RESOLVED", dateStr: "Resolved" } : item
-        )
+    try {
+      if (token && activeEvent) {
+        const res = await apiResolveSOS(token, activeEvent.id, "Resolved by user via mobile app");
+        if (!res.success) {
+          Alert.alert("Resolve Error", res.error || "Failed to resolve SOS alert on server.");
+          setIsResolvingSos(false);
+          return;
+        }
+      }
+
+      setIsSosActive(false);
+
+      if (activeEvent) {
+        setEmergencyHistory((prev) =>
+          prev.map((item) =>
+            item.id === activeEvent.id
+              ? { ...item, status: "RESOLVED", dateStr: "Resolved" }
+              : item
+          )
+        );
+        setActiveEvent(null);
+      }
+
+      setContacts((prev) =>
+        prev.map((c) => ({
+          ...c,
+          status: "Ready",
+        }))
       );
-      setActiveEvent(null);
+
+      setSocialWorker((prev) => ({
+        ...prev,
+        status: "Assigned",
+        eta: undefined,
+      }));
+
+      setModalType("NONE");
+    } catch (err: any) {
+      console.error("Resolve SOS error:", err);
+      Alert.alert("Resolve Error", err?.message || "Failed to resolve emergency alert.");
+    } finally {
+      setIsResolvingSos(false);
     }
-
-    setContacts((prev) =>
-      prev.map((c) => ({
-        ...c,
-        status: "Ready",
-      }))
-    );
-
-    setSocialWorker((prev) => ({
-      ...prev,
-      status: "Assigned",
-      eta: undefined,
-    }));
-
-    setModalType("NONE");
   };
 
   return (
@@ -626,7 +836,9 @@ export default function HomeScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.emergencyBannerTitle}>EMERGENCY DISPATCH IN PROGRESS</Text>
                 <Text style={styles.emergencyBannerSubtitle}>
-                  Coordinates transmitted. Responders & contacts alerted.
+                  {activeEvent?.isSimulatedLocation
+                    ? "Simulation coordinates recorded. Responders mobilized."
+                    : "Genuine device GPS transmitted. Responders mobilized."}
                 </Text>
               </View>
             </View>
@@ -639,11 +851,16 @@ export default function HomeScreen() {
                 <Text style={styles.bannerViewButtonText}>View Status</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.bannerResolveButton}
+                style={[styles.bannerResolveButton, isResolvingSos ? { opacity: 0.6 } : null]}
                 activeOpacity={0.8}
+                disabled={isResolvingSos}
                 onPress={handleResolveSOS}
               >
-                <Text style={styles.bannerResolveButtonText}>Cancel / Resolve SOS</Text>
+                {isResolvingSos ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.bannerResolveButtonText}>Cancel / Resolve SOS</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -878,7 +1095,10 @@ export default function HomeScreen() {
           <TouchableOpacity
             style={styles.card}
             activeOpacity={0.75}
-            onPress={() => setModalType("HISTORY")}
+            onPress={() => {
+              if (token) loadAlertHistory();
+              setModalType("HISTORY");
+            }}
           >
             <View style={[styles.iconBox, styles.historyIconBox]}>
               <Text style={styles.icon}>📋</Text>
@@ -977,16 +1197,34 @@ export default function HomeScreen() {
 
                 <View style={styles.dialogButtonsContainer}>
                   <TouchableOpacity
-                    style={styles.dialogConfirmButton}
+                    style={[styles.dialogConfirmButton, isTriggeringSos ? { opacity: 0.75 } : null]}
                     activeOpacity={0.85}
+                    disabled={isTriggeringSos}
                     onPress={handleConfirmSOS}
                   >
-                    <Text style={styles.dialogConfirmButtonText}>CONFIRM EMERGENCY ALERT</Text>
+                    {isTriggeringSos ? (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                        <Text style={styles.dialogConfirmButtonText}>
+                          TRANSMITTING SOS BEACON...
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text style={styles.dialogConfirmButtonText}>CONFIRM EMERGENCY ALERT</Text>
+                    )}
                   </TouchableOpacity>
 
                   <TouchableOpacity
                     style={styles.dialogCancelButton}
                     activeOpacity={0.7}
+                    disabled={isTriggeringSos}
                     onPress={() => setModalType("NONE")}
                   >
                     <Text style={styles.dialogCancelButtonText}>Cancel</Text>
@@ -999,23 +1237,33 @@ export default function HomeScreen() {
             {modalType === "SOS_SUCCESS" && (
               <View>
                 <View style={styles.dialogHeader}>
-                  <View style={[styles.dialogSirenRing, { borderColor: "#00E676", backgroundColor: "rgba(0, 230, 118, 0.15)" }]}>
+                  <View
+                    style={[
+                      styles.dialogSirenRing,
+                      {
+                        borderColor: "#00E676",
+                        backgroundColor: "rgba(0, 230, 118, 0.15)",
+                      },
+                    ]}
+                  >
                     <Text style={styles.dialogSirenIcon}>📡</Text>
                   </View>
                   <Text style={[styles.dialogTitle, { color: "#FF5252" }]}>
                     EMERGENCY ALERT DISPATCHED
                   </Text>
                   <Text style={styles.dialogSubtitle}>
-                    Your emergency beacon is actively broadcasting. First responders and your
-                    care team are mobilized.
+                    Your emergency beacon is actively broadcasting. First responders and your care
+                    team are mobilized.
                   </Text>
                 </View>
 
                 {/* Dispatch Details Card */}
                 <View style={styles.dispatchDetailsCard}>
                   <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Event ID:</Text>
-                    <Text style={styles.dispatchValue}>{activeEvent?.id || "SOS-ACTIVE"}</Text>
+                    <Text style={styles.dispatchLabel}>Alert ID:</Text>
+                    <Text style={[styles.dispatchValue, { fontWeight: "700", color: "#FF5252" }]}>
+                      {activeEvent?.id || "SOS-ACTIVE"}
+                    </Text>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>User:</Text>
@@ -1023,30 +1271,57 @@ export default function HomeScreen() {
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Phone:</Text>
-                    <Text style={styles.dispatchValue}>{user?.phoneNumber || "+1 (555) 234-5678"}</Text>
+                    <Text style={styles.dispatchValue}>
+                      {user?.phoneNumber || "+1 (555) 234-5678"}
+                    </Text>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>GPS Location:</Text>
                     <View style={{ flex: 1, alignItems: "flex-end" }}>
                       <Text style={styles.dispatchValue}>
-                        {currentLocation?.address || "Active Coordinates"}
+                        {currentLocation?.address || activeEvent?.location || "Active Coordinates"}
                       </Text>
-                      {currentLocation?.isSimulated ? (
+                      {activeEvent?.isSimulatedLocation ? (
                         <Text style={styles.demoWarningSmall}>⚠️ Demo Simulation (Not Real GPS)</Text>
                       ) : (
                         <Text style={styles.realGpsSmall}>🟢 Real Hardware GPS Fix</Text>
                       )}
+                      {activeEvent?.googleMapsUrl ? (
+                        <TouchableOpacity
+                          style={{
+                            marginTop: 4,
+                            paddingVertical: 2,
+                            paddingHorizontal: 6,
+                            backgroundColor: "rgba(76, 162, 255, 0.15)",
+                            borderRadius: 4,
+                          }}
+                          onPress={() => Linking.openURL(activeEvent.googleMapsUrl!)}
+                        >
+                          <Text style={{ fontSize: 11, color: "#4CA2FF", fontWeight: "600" }}>
+                            🗺️ Open in Google Maps
+                          </Text>
+                        </TouchableOpacity>
+                      ) : null}
                     </View>
                   </View>
                   <View style={styles.dispatchRow}>
                     <Text style={styles.dispatchLabel}>Social Worker:</Text>
                     <Text style={[styles.dispatchValue, { color: "#00E676" }]}>
-                      {socialWorker.name} (ETA ~7m)
+                      {socialWorker.name} ({socialWorker.status} - ETA {socialWorker.eta || "7 mins"})
                     </Text>
                   </View>
                   <View style={styles.dispatchRow}>
-                    <Text style={styles.dispatchLabel}>Contacts Notified:</Text>
-                    <Text style={styles.dispatchValue}>Priya Sharma, Maya Sharma</Text>
+                    <Text style={styles.dispatchLabel}>Emergency Contacts:</Text>
+                    <View style={{ flex: 1, alignItems: "flex-end" }}>
+                      <Text style={styles.dispatchValue}>
+                        {contacts.length > 0
+                          ? contacts.map((c) => c.name).join(", ")
+                          : "No contacts registered"}
+                      </Text>
+                      <Text style={{ fontSize: 10, color: "#9E9E9E", marginTop: 2 }}>
+                        ℹ️ Saved in Network (SMS Pending Phase 2)
+                      </Text>
+                    </View>
                   </View>
                 </View>
 
@@ -1060,13 +1335,34 @@ export default function HomeScreen() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.dialogCancelButton, { borderColor: "#E53935" }]}
+                    style={[
+                      styles.dialogCancelButton,
+                      { borderColor: "#E53935" },
+                      isResolvingSos ? { opacity: 0.6 } : null,
+                    ]}
                     activeOpacity={0.8}
+                    disabled={isResolvingSos}
                     onPress={handleResolveSOS}
                   >
-                    <Text style={[styles.dialogCancelButtonText, { color: "#FF5252" }]}>
-                      Cancel / Resolve SOS Alert
-                    </Text>
+                    {isResolvingSos ? (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <ActivityIndicator size="small" color="#FF5252" />
+                        <Text style={[styles.dialogCancelButtonText, { color: "#FF5252" }]}>
+                          Resolving Alert...
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text style={[styles.dialogCancelButtonText, { color: "#FF5252" }]}>
+                        Cancel / Resolve SOS Alert
+                      </Text>
+                    )}
                   </TouchableOpacity>
                 </View>
               </View>
@@ -1723,43 +2019,166 @@ export default function HomeScreen() {
             {modalType === "HISTORY" && (
               <View>
                 <View style={styles.dialogHeader}>
-                  <Text style={styles.modalHeaderEmoji}>📋</Text>
-                  <Text style={styles.dialogTitle}>EMERGENCY ALERT HISTORY</Text>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      width: "100%",
+                      marginBottom: 6,
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <Text style={styles.modalHeaderEmoji}>📋</Text>
+                      <Text style={[styles.dialogTitle, { marginBottom: 0 }]}>
+                        EMERGENCY HISTORY
+                      </Text>
+                    </View>
+                    {token ? (
+                      <TouchableOpacity
+                        onPress={loadAlertHistory}
+                        disabled={isLoadingHistory}
+                        activeOpacity={0.7}
+                        style={{
+                          paddingVertical: 4,
+                          paddingHorizontal: 10,
+                          backgroundColor: "rgba(76, 162, 255, 0.15)",
+                          borderRadius: 6,
+                        }}
+                      >
+                        {isLoadingHistory ? (
+                          <ActivityIndicator size="small" color="#4CA2FF" />
+                        ) : (
+                          <Text style={{ fontSize: 12, color: "#4CA2FF", fontWeight: "600" }}>
+                            🔄 Refresh
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
                   <Text style={styles.dialogSubtitle}>
-                    Complete logs of all SOS beacon activations, coordinates, and dispatch outcomes.
+                    Recorded database logs of all SOS beacon activations, coordinates, and dispatch
+                    outcomes.
                   </Text>
                 </View>
 
-                <ScrollView style={{ maxHeight: 260 }} showsVerticalScrollIndicator={false}>
-                  {emergencyHistory.map((event) => (
-                    <View key={event.id} style={styles.historyItem}>
-                      <View style={styles.historyItemHeader}>
-                        <Text style={styles.historyId}>{event.id}</Text>
-                        <View
-                          style={[
-                            styles.historyBadge,
-                            event.status === "ACTIVE_DISPATCH"
-                              ? styles.historyBadgeActive
-                              : styles.historyBadgeResolved,
-                          ]}
-                        >
-                          <Text
+                <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
+                  {isLoadingHistory ? (
+                    <View style={{ padding: 24, alignItems: "center" }}>
+                      <ActivityIndicator size="small" color="#4CA2FF" />
+                      <Text style={{ color: "#9E9E9E", fontSize: 13, marginTop: 8 }}>
+                        Loading alert records from MongoDB...
+                      </Text>
+                    </View>
+                  ) : emergencyHistory.length === 0 ? (
+                    <View style={{ padding: 24, alignItems: "center" }}>
+                      <Text style={{ fontSize: 32, marginBottom: 8 }}>📭</Text>
+                      <Text style={{ color: "#FFFFFF", fontSize: 15, fontWeight: "600" }}>
+                        No SOS Alerts Recorded
+                      </Text>
+                      <Text
+                        style={{
+                          color: "#9E9E9E",
+                          fontSize: 12,
+                          textAlign: "center",
+                          marginTop: 4,
+                        }}
+                      >
+                        When you trigger an emergency SOS, the alert and GPS location are recorded
+                        in MongoDB and displayed here.
+                      </Text>
+                    </View>
+                  ) : (
+                    emergencyHistory.map((event) => (
+                      <View key={event.id} style={styles.historyItem}>
+                        <View style={styles.historyItemHeader}>
+                          <Text style={styles.historyId}>{event.id}</Text>
+                          <View
                             style={[
-                              styles.historyBadgeText,
+                              styles.historyBadge,
                               event.status === "ACTIVE_DISPATCH"
-                                ? { color: "#FF5252" }
-                                : { color: "#00E676" },
+                                ? styles.historyBadgeActive
+                                : styles.historyBadgeResolved,
                             ]}
                           >
-                            {event.status === "ACTIVE_DISPATCH" ? "ACTIVE" : "RESOLVED"}
-                          </Text>
+                            <Text
+                              style={[
+                                styles.historyBadgeText,
+                                event.status === "ACTIVE_DISPATCH"
+                                  ? { color: "#FF5252" }
+                                  : { color: "#00E676" },
+                              ]}
+                            >
+                              {event.status === "ACTIVE_DISPATCH" ? "ACTIVE" : "RESOLVED"}
+                            </Text>
+                          </View>
                         </View>
+                        <Text style={styles.historyLocation}>📍 {event.location}</Text>
+
+                        {/* Location source indicator & Google Maps link */}
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            marginTop: 4,
+                            marginBottom: 4,
+                            gap: 6,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <View
+                            style={[
+                              styles.gpsSourceTag,
+                              event.isSimulatedLocation
+                                ? styles.gpsSourceTagDemo
+                                : styles.gpsSourceTagReal,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.gpsSourceTagText,
+                                event.isSimulatedLocation
+                                  ? styles.gpsSourceTagTextDemo
+                                  : styles.gpsSourceTagTextReal,
+                              ]}
+                            >
+                              {event.isSimulatedLocation
+                                ? "⚠️ DEMO SIMULATION"
+                                : "🟢 REAL DEVICE GPS"}
+                            </Text>
+                          </View>
+
+                          {event.googleMapsUrl ? (
+                            <TouchableOpacity
+                              onPress={() => Linking.openURL(event.googleMapsUrl!)}
+                              style={{
+                                paddingVertical: 2,
+                                paddingHorizontal: 6,
+                                backgroundColor: "rgba(76, 162, 255, 0.15)",
+                                borderRadius: 4,
+                              }}
+                            >
+                              <Text
+                                style={{ fontSize: 11, color: "#4CA2FF", fontWeight: "600" }}
+                              >
+                                🗺️ View Google Maps
+                              </Text>
+                            </TouchableOpacity>
+                          ) : null}
+                        </View>
+
+                        <Text style={styles.historyTime}>🕒 {event.timestamp}</Text>
+                        {event.assignedWorker ? (
+                          <Text style={{ fontSize: 12, color: "#00E676", marginTop: 2 }}>
+                            👨‍⚕️ Worker: {event.assignedWorker}
+                          </Text>
+                        ) : null}
+                        {event.notes ? (
+                          <Text style={styles.historyNotes}>{event.notes}</Text>
+                        ) : null}
                       </View>
-                      <Text style={styles.historyLocation}>📍 {event.location}</Text>
-                      <Text style={styles.historyTime}>🕒 {event.timestamp}</Text>
-                      {event.notes ? <Text style={styles.historyNotes}>{event.notes}</Text> : null}
-                    </View>
-                  ))}
+                    ))
+                  )}
                 </ScrollView>
 
                 <View style={styles.dialogButtonsContainer}>
